@@ -11,6 +11,8 @@ coverage.out
 
 # CPA reference checkout used for research, not part of this project
 _cpa_ref/
+# Official panel reference checkout used for research, not part of this project
+_panel_ref/
 
 # web frontend build output (rebuilt by `make web-build`)
 web/node_modules/
