@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate, useNavigate, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { isAuthed, subscribe, clearSession, getSession, bootstrapFromPanel } from "./store/session";
+import { useT } from "./i18n";
 import Login from "./pages/Login";
 import KeyList from "./pages/KeyList";
 import KeyNew from "./pages/KeyNew";
@@ -16,6 +17,7 @@ function Shell() {
   const authed = useAuthTick();
   const nav = useNavigate();
   const [bootstrapped, setBootstrapped] = useState(false);
+  const t = useT();
 
   // When not yet authenticated, try once to reuse the panel's saved
   // management key (same-origin iframe embed). Only runs when not authed and
@@ -34,7 +36,7 @@ function Shell() {
 
   if (!authed) {
     if (!bootstrapped) {
-      return <div className="app muted" style={{ padding: "40px 20px" }}>正在从面板恢复会话…</div>;
+      return <div className="app muted" style={{ padding: "40px 20px" }}>{t("session.restoring")}</div>;
     }
     return (
       <Routes>
@@ -48,12 +50,12 @@ function Shell() {
     <div className="app">
       <div className="header">
         <div>
-          <h1>cpa-key-policy 管理面板</h1>
+          <h1>{t("header.title")}</h1>
           <div className="sub">{s.baseUrl}</div>
         </div>
         <div className="actions">
-          <Link to="/keys"><button className="btn sm">Key 列表</button></Link>
-          <Link to="/keys/new"><button className="btn sm primary">新建 Key</button></Link>
+          <Link to="/keys"><button className="btn sm">{t("header.keyList")}</button></Link>
+          <Link to="/keys/new"><button className="btn sm primary">{t("header.newKey")}</button></Link>
           <button
             className="btn sm"
             onClick={() => {
@@ -61,7 +63,7 @@ function Shell() {
               nav("/login");
             }}
           >
-            退出
+            {t("header.logout")}
           </button>
         </div>
       </div>

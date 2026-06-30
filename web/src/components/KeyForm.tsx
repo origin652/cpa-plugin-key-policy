@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { KeyPublic, ModelRule } from "../types";
 import ModelPicker from "./ModelPicker";
+import { useT } from "../i18n";
 
 export interface KeyFormValues {
   id: string;
@@ -49,6 +50,7 @@ export default function KeyForm({
   const [rpm, setRpm] = useState(initial?.rpm ?? 0);
   const [dailyLimit, setDailyLimit] = useState(initial?.daily_limit_usd ?? 0);
   const [weeklyLimit, setWeeklyLimit] = useState(initial?.weekly_limit_usd ?? 0);
+  const t = useT();
   // Pricing table keyed by alias (lowercased) so it survives picker re-emits.
   const [prices, setPrices] = useState<Record<string, PriceRow>>(() => {
     const out: Record<string, PriceRow> = {};
@@ -100,7 +102,7 @@ export default function KeyForm({
     e.preventDefault();
     setLocalErr("");
     if (!id.trim()) {
-      setLocalErr("id 不能为空");
+      setLocalErr(t("keyForm.idRequired"));
       return;
     }
     // Stamp the per-alias pricing back onto the model rules before submit.
@@ -126,7 +128,7 @@ export default function KeyForm({
       });
     } catch (err) {
       const e = err as { response?: { data?: { error?: { message?: string } } }; message?: string };
-      setLocalErr(e.response?.data?.error?.message ?? e.message ?? "提交失败");
+      setLocalErr(e.response?.data?.error?.message ?? e.message ?? t("keyForm.submitFailed"));
     } finally {
       setBusy(false);
     }
@@ -136,29 +138,29 @@ export default function KeyForm({
     <form className="card" onSubmit={submit}>
       <div className="row2">
         <div className="form-row">
-          <label>Key ID *</label>
+          <label>{t("keyForm.idLabel")}</label>
           <input
             className="input"
             value={id}
             onChange={(e) => setId(e.target.value)}
             readOnly={idReadOnly}
-            placeholder="例如 team-a"
+            placeholder={t("keyForm.idPlaceholder")}
             autoFocus={!idReadOnly}
           />
         </div>
         <div className="form-row">
-          <label>名称（可选）</label>
+          <label>{t("keyForm.nameLabel")}</label>
           <input
             className="input"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="留空则用 ID"
+            placeholder={t("keyForm.namePlaceholder")}
           />
         </div>
       </div>
       <div className="row2">
         <div className="form-row">
-          <label>RPM（每分钟请求数，0 = 不限）</label>
+          <label>{t("keyForm.rpmLabel")}</label>
           <input
             className="input"
             type="number"
@@ -168,7 +170,7 @@ export default function KeyForm({
           />
         </div>
         <div className="form-row">
-          <label>状态</label>
+          <label>{t("keyForm.statusLabel")}</label>
           <label className="switch">
             <input
               type="checkbox"
@@ -176,14 +178,14 @@ export default function KeyForm({
               onChange={(e) => setEnabled(e.target.checked)}
             />
             <span className="track"><span className="thumb" /></span>
-            <span>启用此 key</span>
+            <span>{t("keyForm.enableKey")}</span>
           </label>
         </div>
       </div>
 
       <div className="row2">
         <div className="form-row">
-          <label>每日用量上限（美元，0 = 不限）</label>
+          <label>{t("keyForm.dailyLimitLabel")}</label>
           <input
             className="input"
             type="number"
@@ -194,7 +196,7 @@ export default function KeyForm({
           />
         </div>
         <div className="form-row">
-          <label>每周用量上限（美元，0 = 不限，滚动 7 天）</label>
+          <label>{t("keyForm.weeklyLimitLabel")}</label>
           <input
             className="input"
             type="number"
@@ -207,23 +209,23 @@ export default function KeyForm({
       </div>
 
       <div className="form-row">
-        <label>允许的模型（多选，别名自动 = 模型名）</label>
+        <label>{t("keyForm.modelsLabel")}</label>
         <ModelPicker initial={initial?.models} onChange={handleModelsChange} />
       </div>
 
       {/* Per-alias pricing table. Stamped onto each ModelRule at submit. */}
       {models.length > 0 && (
         <div className="form-row" style={{ marginTop: 8 }}>
-          <label>模型单价（美元 / 每百万 token；留 0 = 不计费）</label>
+          <label>{t("keyForm.priceLabel")}</label>
           <div className="card table-wrap" style={{ padding: 0 }}>
             <table>
               <thead>
                 <tr>
-                  <th>别名</th>
-                  <th>Provider</th>
-                  <th>输入单价 $/M</th>
-                  <th>输出单价 $/M</th>
-                  <th title="缓存命中输入 token 单价（prompt-caching read）。留 0 = 按 输入单价 计。Claude 的 cache 读 token 不含在输入里，单独计；OpenAI/Gemini/Codex 的 cached 是输入的子集，会从输入里拆出来按此价重算，不重复计费。">缓存读单价 $/M</th>
+                  <th>{t("keyForm.colAlias")}</th>
+                  <th>{t("keyForm.colProvider")}</th>
+                  <th>{t("keyForm.colInput")}</th>
+                  <th>{t("keyForm.colOutput")}</th>
+                  <th title={t("keyForm.colCacheReadHint")}>{t("keyForm.colCacheRead")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -277,9 +279,9 @@ export default function KeyForm({
 
       <div className="actions">
         <button className="btn primary" type="submit" disabled={busy}>
-          {busy ? "提交中…" : submitLabel}
+          {busy ? t("keyForm.submitting") : submitLabel}
         </button>
-        <button className="btn" type="button" onClick={onCancel}>取消</button>
+        <button className="btn" type="button" onClick={onCancel}>{t("keyForm.cancel")}</button>
       </div>
     </form>
   );

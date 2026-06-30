@@ -3,10 +3,12 @@ import { useNavigate, useParams } from "react-router-dom";
 import { listKeys, patchKey } from "../api/keys";
 import type { KeyPublic } from "../types";
 import KeyForm from "../components/KeyForm";
+import { useT } from "../i18n";
 
 export default function KeyEdit() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
+  const t = useT();
   const [key, setKey] = useState<KeyPublic | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -17,26 +19,27 @@ export default function KeyEdit() {
       try {
         const all = await listKeys();
         const found = all.find((k) => k.id === decodeURIComponent(id ?? ""));
-        if (!found) setError("未找到该 key");
+        if (!found) setError(t("keys.notFound"));
         else setKey(found);
       } catch (e) {
-        setError((e as Error).message ?? "加载失败");
+        setError((e as Error).message ?? t("keys.loadFailed"));
       } finally {
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  if (loading) return <div className="muted">加载中…</div>;
-  if (error || !key) return <div className="error">{error || "未找到"}</div>;
+  if (loading) return <div className="muted">{t("keys.loading")}</div>;
+  if (error || !key) return <div className="error">{error || t("edit.notFound")}</div>;
 
   return (
     <div>
-      <h2 style={{ marginTop: 0 }}>编辑 Key · {key.id}</h2>
+      <h2 style={{ marginTop: 0 }}>{t("edit.title", { id: key.id })}</h2>
       <KeyForm
         initial={key}
         idReadOnly
-        submitLabel="保存修改"
+        submitLabel={t("edit.save")}
         onCancel={() => nav("/keys")}
         onSubmit={async (v) => {
           await patchKey({

@@ -1,0 +1,103 @@
+{
+  "header": {
+    "title": "Управление cpa-key-policy",
+    "keyList": "Ключи",
+    "newKey": "Новый ключ",
+    "logout": "Выйти"
+  },
+  "login": {
+    "subTitle": "Вход в CLIProxyAPI",
+    "baseUrl": "Base URL CPA",
+    "baseUrlPlaceholder": "http://127.0.0.1:8317",
+    "managementKey": "Management Key (CPA secret-key)",
+    "managementKeyPlaceholder": "remote-management.secret-key",
+    "secretRequired": "Пожалуйста, введите management key",
+    "verifying": "Проверка…",
+    "submit": "Войти",
+    "loginFailed": "Ошибка входа",
+    "memoryNote": "Ключ хранится только в памяти и теряется при закрытии или обновлении страницы. Он никогда не записывается в локальное хранилище.",
+    "embeddedFallback": "Не удалось прочитать сохранённый management key из панели (возможно, не включена опция «запомнить пароль»). Пожалуйста, введите его вручную."
+  },
+  "session": {
+    "restoring": "Восстановление сессии из панели…"
+  },
+  "keys": {
+    "newKey": "Новый ключ",
+    "refresh": "Обновить",
+    "loading": "Загрузка…",
+    "loadFailed": "Ошибка загрузки",
+    "empty": "Пока нет ни одного клиентского ключа. Нажмите «Новый ключ», чтобы создать.",
+    "colIdName": "ID / Имя",
+    "colStatus": "Статус",
+    "colPreview": "Превью ключа",
+    "colRpm": "RPM",
+    "colUsage": "Использование (сегодня / на неделе)",
+    "colModels": "Модели",
+    "colActions": "Действия",
+    "enabled": "Включён",
+    "disabled": "Отключён",
+    "edit": "Изменить",
+    "resetRpm": "Сбросить RPM",
+    "rotate": "Сменить",
+    "delete": "Удалить",
+    "rotateConfirm": "Сменить ключ для {{id}}? Старый ключ немедленно станет недействительным.",
+    "deleteConfirm": "Удалить ключ {{id}}? Это действие необратимо.",
+    "rotateOk": "Сменён",
+    "rotateFailed": "Ошибка смены ключа",
+    "resetFailed": "Ошибка сброса",
+    "deleteFailed": "Ошибка удаления",
+    "notFound": "Ключ не найден",
+    "rotated": "Создан новый ключ (смена)"
+  },
+  "edit": {
+    "title": "Изменить ключ · {{id}}",
+    "notFound": "Не найдено",
+    "save": "Сохранить"
+  },
+  "new": {
+    "title": "Новый ключ",
+    "create": "Создать ключ"
+  },
+  "keyForm": {
+    "idLabel": "Key ID *",
+    "idPlaceholder": "напр. team-a",
+    "nameLabel": "Имя (необязательно)",
+    "namePlaceholder": "Если пусто — используется ID",
+    "rpmLabel": "RPM (запросов в минуту, 0 = без ограничений)",
+    "statusLabel": "Статус",
+    "enableKey": "Включить этот ключ",
+    "dailyLimitLabel": "Дневной лимит (USD, 0 = без ограничений)",
+    "weeklyLimitLabel": "Недельный лимит (USD, 0 = без ограничений, скользящее окно 7 дней)",
+    "modelsLabel": "Разрешённые модели (мультивыбор, alias = имя модели)",
+    "priceLabel": "Цена модели (USD / млн токенов; 0 = не тарифицируется)",
+    "colAlias": "Алиас",
+    "colProvider": "Provider",
+    "colInput": "Ввод $/M",
+    "colOutput": "Вывод $/M",
+    "colCacheRead": "Кэш-чтение $/M",
+    "colCacheReadHint": "Цена для кэш-попаданий входных токенов (prompt-caching read). 0 = считается по цене ввода. У Claude токены cache-read учитываются отдельно от ввода и тарифицируются сами по себе; у OpenAI/Gemini/Codex кэшированные токены — подмножество ввода и выделаются из него и пересчитываются по этой цене (без двойного учёта).",
+    "idRequired": "id не может быть пустым",
+    "submitting": "Отправка…",
+    "cancel": "Отмена",
+    "submitFailed": "Ошибка отправки"
+  },
+  "picker": {
+    "loading": "Загрузка доступных моделей…",
+    "loadFailed": "Ошибка загрузки списка моделей",
+    "empty": "CPA не вернул ни одной модели. Убедитесь, что в CPA настроены вышестоящие провайдеры.",
+    "searchPlaceholder": "Поиск провайдера или модели…",
+    "selected": "Выбрано моделей: {{count}} · alias = имя модели"
+  },
+  "plainModal": {
+    "created": "Ключ создан",
+    "defaultTitle": "Ключ сгенерирован",
+    "warning": "⚠ Это открытый ключ. Он показывается только один раз и недоступен после закрытия — сохраните его сейчас.",
+    "copy": "Копировать",
+    "saved": "Сохранено, закрыть"
+  },
+  "usage": {
+    "today": "Сегодня",
+    "thisWeek": "На неделе",
+    "unlimited": "без лимита"
+  }
+}

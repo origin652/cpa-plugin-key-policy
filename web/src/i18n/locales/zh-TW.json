@@ -1,0 +1,103 @@
+{
+  "header": {
+    "title": "cpa-key-policy 管理面板",
+    "keyList": "Key 列表",
+    "newKey": "新建 Key",
+    "logout": "登出"
+  },
+  "login": {
+    "subTitle": "登入 CLIProxyAPI",
+    "baseUrl": "CPA 位址 (Base URL)",
+    "baseUrlPlaceholder": "http://127.0.0.1:8317",
+    "managementKey": "Management Key (CPA secret-key)",
+    "managementKeyPlaceholder": "remote-management.secret-key",
+    "secretRequired": "請填寫 management key",
+    "verifying": "驗證中…",
+    "submit": "登入",
+    "loginFailed": "登入失敗",
+    "memoryNote": "key 僅存在記憶體中，關閉／重新整理頁面即失效，不會寫入本機儲存。",
+    "embeddedFallback": "未從面板讀取到已儲存的 management key（可能未勾選「記住密碼」），請手動輸入。"
+  },
+  "session": {
+    "restoring": "正在從面板還原工作階段…"
+  },
+  "keys": {
+    "newKey": "新建 Key",
+    "refresh": "重新整理",
+    "loading": "載入中…",
+    "loadFailed": "載入失敗",
+    "empty": "尚未有任何下游 key，點擊「新建 Key」建立。",
+    "colIdName": "ID / 名稱",
+    "colStatus": "狀態",
+    "colPreview": "Key 預覽",
+    "colRpm": "RPM",
+    "colUsage": "用量（今日 / 本週）",
+    "colModels": "模型數",
+    "colActions": "操作",
+    "enabled": "啟用",
+    "disabled": "停用",
+    "edit": "編輯",
+    "resetRpm": "重設RPM",
+    "rotate": "輪換",
+    "delete": "刪除",
+    "rotateConfirm": "確認輪換 key {{id}} 的金鑰？舊金鑰將立即失效。",
+    "deleteConfirm": "確認刪除 key {{id}}？此操作無法復原。",
+    "rotateOk": "輪換成功",
+    "rotateFailed": "輪換失敗",
+    "resetFailed": "重設失敗",
+    "deleteFailed": "刪除失敗",
+    "notFound": "找不到該 key",
+    "rotated": "新 Key 已產生（輪換）"
+  },
+  "edit": {
+    "title": "編輯 Key · {{id}}",
+    "notFound": "找不到",
+    "save": "儲存修改"
+  },
+  "new": {
+    "title": "新建 Key",
+    "create": "建立 Key"
+  },
+  "keyForm": {
+    "idLabel": "Key ID *",
+    "idPlaceholder": "例如 team-a",
+    "nameLabel": "名稱（可選）",
+    "namePlaceholder": "留空則用 ID",
+    "rpmLabel": "RPM（每分鐘請求數，0 = 不限）",
+    "statusLabel": "狀態",
+    "enableKey": "啟用此 key",
+    "dailyLimitLabel": "每日用量上限（美元，0 = 不限）",
+    "weeklyLimitLabel": "每週用量上限（美元，0 = 不限，滾動 7 天）",
+    "modelsLabel": "允許的模型（多選，別名自動 = 模型名）",
+    "priceLabel": "模型單價（美元 / 每百萬 token；留 0 = 不計費）",
+    "colAlias": "別名",
+    "colProvider": "Provider",
+    "colInput": "輸入單價 $/M",
+    "colOutput": "輸出單價 $/M",
+    "colCacheRead": "快取讀單價 $/M",
+    "colCacheReadHint": "快取命中輸入 token 單價（prompt-caching read）。留 0 = 按 輸入單價 計。Claude 的 cache 讀 token 不含在輸入裡，單獨計；OpenAI/Gemini/Codex 的 cached 是輸入的子集，會從輸入裡拆出來按此價重算，不重複計費。",
+    "idRequired": "id 不能為空",
+    "submitting": "提交中…",
+    "cancel": "取消",
+    "submitFailed": "提交失敗"
+  },
+  "picker": {
+    "loading": "載入可用模型…",
+    "loadFailed": "載入模型列表失敗",
+    "empty": "未從 CPA 取到任何模型。請確認 CPA 已設定上游 provider。",
+    "searchPlaceholder": "搜尋 provider 或模型名…",
+    "selected": "已選 {{count}} 個模型 · 別名自動等於模型名"
+  },
+  "plainModal": {
+    "created": "Key 已建立",
+    "defaultTitle": "Key 已產生",
+    "warning": "⚠ 這是明文 key，僅顯示一次，關閉後無法再次檢視，請立即儲存。",
+    "copy": "複製",
+    "saved": "我已儲存，關閉"
+  },
+  "usage": {
+    "today": "今日",
+    "thisWeek": "本週",
+    "unlimited": "不限"
+  }
+}

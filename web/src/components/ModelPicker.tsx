@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchCatalog, groupByProvider } from "../api/models";
 import type { ModelRule } from "../types";
+import { useT } from "../i18n";
 
 interface Props {
   // currently bound rules (for edit mode preselection)
@@ -12,6 +13,7 @@ interface Props {
 // Multi-select picker over CPA's available models, grouped by provider.
 // Selected models become ModelRule[] with alias = target_model.
 export default function ModelPicker({ initial, onChange }: Props) {
+  const t = useT();
   const [groups, setGroups] = useState<{ provider: string; models: string[] }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
@@ -37,7 +39,7 @@ export default function ModelPicker({ initial, onChange }: Props) {
         setGroups(groupByProvider(cat));
       } catch (e) {
         if (!alive) return;
-        setError((e as Error).message || "加载模型列表失败");
+        setError((e as Error).message || t("picker.loadFailed"));
       } finally {
         if (alive) setLoading(false);
       }
@@ -89,22 +91,22 @@ export default function ModelPicker({ initial, onChange }: Props) {
     });
   };
 
-  if (loading) return <div className="muted">加载可用模型…</div>;
+  if (loading) return <div className="muted">{t("picker.loading")}</div>;
   if (error) return <div className="error">{error}</div>;
   if (groups.length === 0)
-    return <div className="muted">未从 CPA 取到任何模型。请确认 CPA 已配置上游 provider。</div>;
+    return <div className="muted">{t("picker.empty")}</div>;
 
   return (
     <div>
       <input
         className="input"
-        placeholder="搜索 provider 或模型名…"
+        placeholder={t("picker.searchPlaceholder")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         style={{ marginBottom: 12 }}
       />
       <div className="muted" style={{ marginBottom: 8 }}>
-        已选 {selected.size} 个模型 · 别名自动等于模型名
+        {t("picker.selected", { count: selected.size })}
       </div>
       {filtered.map((g) => (
         <div className="picker-group" key={g.provider}>

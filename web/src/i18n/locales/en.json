@@ -1,0 +1,103 @@
+{
+  "header": {
+    "title": "cpa-key-policy Management",
+    "keyList": "Keys",
+    "newKey": "New Key",
+    "logout": "Log out"
+  },
+  "login": {
+    "subTitle": "Sign in to CLIProxyAPI",
+    "baseUrl": "CPA Base URL",
+    "baseUrlPlaceholder": "http://127.0.0.1:8317",
+    "managementKey": "Management Key (CPA secret-key)",
+    "managementKeyPlaceholder": "remote-management.secret-key",
+    "secretRequired": "Please enter the management key",
+    "verifying": "Verifying…",
+    "submit": "Sign in",
+    "loginFailed": "Sign-in failed",
+    "memoryNote": "The key is held in memory only and is lost when the page is closed or refreshed. It is never written to local storage.",
+    "embeddedFallback": "No saved management key was read from the panel (\"remember password\" may not be checked). Please enter it manually."
+  },
+  "session": {
+    "restoring": "Restoring session from panel…"
+  },
+  "keys": {
+    "newKey": "New Key",
+    "refresh": "Refresh",
+    "loading": "Loading…",
+    "loadFailed": "Failed to load",
+    "empty": "No downstream keys yet. Click \"New Key\" to create one.",
+    "colIdName": "ID / Name",
+    "colStatus": "Status",
+    "colPreview": "Key preview",
+    "colRpm": "RPM",
+    "colUsage": "Usage (today / this week)",
+    "colModels": "Models",
+    "colActions": "Actions",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "edit": "Edit",
+    "resetRpm": "Reset RPM",
+    "rotate": "Rotate",
+    "delete": "Delete",
+    "rotateConfirm": "Rotate the key for {{id}}? The old key becomes invalid immediately.",
+    "deleteConfirm": "Delete key {{id}}? This cannot be undone.",
+    "rotateOk": "Rotated",
+    "rotateFailed": "Rotation failed",
+    "resetFailed": "Reset failed",
+    "deleteFailed": "Delete failed",
+    "notFound": "Key not found",
+    "rotated": "New key generated (rotated)"
+  },
+  "edit": {
+    "title": "Edit Key · {{id}}",
+    "notFound": "Not found",
+    "save": "Save changes"
+  },
+  "new": {
+    "title": "New Key",
+    "create": "Create key"
+  },
+  "keyForm": {
+    "idLabel": "Key ID *",
+    "idPlaceholder": "e.g. team-a",
+    "nameLabel": "Name (optional)",
+    "namePlaceholder": "Defaults to ID if empty",
+    "rpmLabel": "RPM (requests per minute, 0 = unlimited)",
+    "statusLabel": "Status",
+    "enableKey": "Enable this key",
+    "dailyLimitLabel": "Daily usage limit (USD, 0 = unlimited)",
+    "weeklyLimitLabel": "Weekly usage limit (USD, 0 = unlimited, rolling 7 days)",
+    "modelsLabel": "Allowed models (multi-select, alias auto = model name)",
+    "priceLabel": "Model unit price (USD / per million tokens; 0 = not billed)",
+    "colAlias": "Alias",
+    "colProvider": "Provider",
+    "colInput": "Input $/M",
+    "colOutput": "Output $/M",
+    "colCacheRead": "Cache read $/M",
+    "colCacheReadHint": "Unit price for cache-hit input tokens (prompt-caching read). 0 = charged at the input price. Claude's cache-read tokens are separate from input and billed on their own; OpenAI/Gemini/Codex's cached tokens are a subset of input and are split out and re-billed at this price (no double counting).",
+    "idRequired": "id cannot be empty",
+    "submitting": "Submitting…",
+    "cancel": "Cancel",
+    "submitFailed": "Submit failed"
+  },
+  "picker": {
+    "loading": "Loading available models…",
+    "loadFailed": "Failed to load model list",
+    "empty": "No models returned from CPA. Make sure CPA has upstream providers configured.",
+    "searchPlaceholder": "Search provider or model name…",
+    "selected": "{{count}} model(s) selected · alias auto = model name"
+  },
+  "plainModal": {
+    "created": "Key created",
+    "defaultTitle": "Key generated",
+    "warning": "⚠ This is the plaintext key. It is shown only once and cannot be viewed again after closing — save it now.",
+    "copy": "Copy",
+    "saved": "Saved, close"
+  },
+  "usage": {
+    "today": "Today",
+    "thisWeek": "This week",
+    "unlimited": "unlimited"
+  }
+}

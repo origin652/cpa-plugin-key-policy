@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { listKeys, deleteKey, rotateKey, resetRPM } from "../api/keys";
 import type { KeyPublic, UsageSummary } from "../types";
 import PlainKeyModal from "../components/PlainKeyModal";
+import { useT } from "../i18n";
 
 function fmtUsd(n: number): string {
   return "$" + n.toFixed(2);
@@ -12,23 +13,25 @@ function fmtUsd(n: number): string {
 // (0) show as "不限"; usage at/over a limit is flagged in the danger color so an
 // admin can spot a throttled key at a glance.
 function UsageCell({ usage }: { usage: UsageSummary }) {
+  const t = useT();
   const dailyOver = usage.daily_limit_usd > 0 && usage.daily_usd >= usage.daily_limit_usd;
   const weeklyOver = usage.weekly_limit_usd > 0 && usage.weekly_usd >= usage.weekly_limit_usd;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       <span className={dailyOver ? "" : "muted"} style={dailyOver ? { color: "var(--danger)", fontWeight: 600 } : undefined}>
-        今日 {fmtUsd(usage.daily_usd)}
-        {usage.daily_limit_usd > 0 ? ` / ${fmtUsd(usage.daily_limit_usd)}` : " / 不限"}
+        {t("usage.today")} {fmtUsd(usage.daily_usd)}
+        {usage.daily_limit_usd > 0 ? ` / ${fmtUsd(usage.daily_limit_usd)}` : ` / ${t("usage.unlimited")}`}
       </span>
       <span className={weeklyOver ? "" : "muted"} style={weeklyOver ? { color: "var(--danger)", fontWeight: 600 } : undefined}>
-        本周 {fmtUsd(usage.weekly_usd)}
-        {usage.weekly_limit_usd > 0 ? ` / ${fmtUsd(usage.weekly_limit_usd)}` : " / 不限"}
+        {t("usage.thisWeek")} {fmtUsd(usage.weekly_usd)}
+        {usage.weekly_limit_usd > 0 ? ` / ${fmtUsd(usage.weekly_limit_usd)}` : ` / ${t("usage.unlimited")}`}
       </span>
     </div>
   );
 }
 
 export default function KeyList() {
+  const t = useT();
   const [keys, setKeys] = useState<KeyPublic[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -42,25 +45,25 @@ export default function KeyList() {
       setKeys(await listKeys());
     } catch (e) {
       const err = e as { response?: { data?: { error?: { message?: string } } }; message?: string };
-      setError(err.response?.data?.error?.message ?? err.message ?? "加载失败");
+      setError(err.response?.data?.error?.message ?? err.message ?? t("keys.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const onRotate = async (id: string) => {
-    if (!confirm(`确认轮换 key ${id} 的密钥？旧密钥将立即失效。`)) return;
+    if (!confirm(t("keys.rotateConfirm", { id }))) return;
     try {
       const r = await rotateKey(id);
       setPlain(r.plain_key);
-      setPlainTitle("新 Key 已生成（轮换）");
+      setPlainTitle(t("keys.rotated"));
       void load();
     } catch (e) {
-      alert((e as Error).message ?? "轮换失败");
+      alert((e as Error).message ?? t("keys.rotateFailed"));
     }
   };
 
@@ -69,43 +72,43 @@ export default function KeyList() {
       await resetRPM(id);
       void load();
     } catch (e) {
-      alert((e as Error).message ?? "重置失败");
+      alert((e as Error).message ?? t("keys.resetFailed"));
     }
   };
 
   const onDelete = async (id: string) => {
-    if (!confirm(`确认删除 key ${id}？此操作不可撤销。`)) return;
+    if (!confirm(t("keys.deleteConfirm", { id }))) return;
     try {
       await deleteKey(id);
       void load();
     } catch (e) {
-      alert((e as Error).message ?? "删除失败");
+      alert((e as Error).message ?? t("keys.deleteFailed"));
     }
   };
 
   return (
     <div>
       <div className="actions" style={{ marginBottom: 14 }}>
-        <Link to="/keys/new"><button className="btn primary">新建 Key</button></Link>
-        <button className="btn" onClick={load}>刷新</button>
+        <Link to="/keys/new"><button className="btn primary">{t("keys.newKey")}</button></Link>
+        <button className="btn" onClick={load}>{t("keys.refresh")}</button>
       </div>
       {error && <div className="error">{error}</div>}
       {loading ? (
-        <div className="muted">加载中…</div>
+        <div className="muted">{t("keys.loading")}</div>
       ) : keys.length === 0 ? (
-        <div className="card muted">还没有任何下游 key，点击"新建 Key"创建。</div>
+        <div className="card muted">{t("keys.empty")}</div>
       ) : (
         <div className="card table-wrap">
           <table>
             <thead>
               <tr>
-                <th>ID / 名称</th>
-                <th>状态</th>
-                <th>Key 预览</th>
-                <th>RPM</th>
-                <th>用量（今日 / 本周）</th>
-                <th>模型数</th>
-                <th>操作</th>
+                <th>{t("keys.colIdName")}</th>
+                <th>{t("keys.colStatus")}</th>
+                <th>{t("keys.colPreview")}</th>
+                <th>{t("keys.colRpm")}</th>
+                <th>{t("keys.colUsage")}</th>
+                <th>{t("keys.colModels")}</th>
+                <th>{t("keys.colActions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -117,7 +120,7 @@ export default function KeyList() {
                   </td>
                   <td>
                     <span className={"tag " + (k.enabled ? "on" : "off")}>
-                      {k.enabled ? "启用" : "禁用"}
+                      {k.enabled ? t("keys.enabled") : t("keys.disabled")}
                     </span>
                   </td>
                   <td className="mono">{k.key_preview}</td>
@@ -129,11 +132,11 @@ export default function KeyList() {
                   <td>
                     <div className="actions">
                       <Link to={`/keys/${encodeURIComponent(k.id)}/edit`}>
-                        <button className="btn sm">编辑</button>
+                        <button className="btn sm">{t("keys.edit")}</button>
                       </Link>
-                      <button className="btn sm" onClick={() => onReset(k.id)}>重置RPM</button>
-                      <button className="btn sm" onClick={() => onRotate(k.id)}>轮换</button>
-                      <button className="btn sm danger" onClick={() => onDelete(k.id)}>删除</button>
+                      <button className="btn sm" onClick={() => onReset(k.id)}>{t("keys.resetRpm")}</button>
+                      <button className="btn sm" onClick={() => onRotate(k.id)}>{t("keys.rotate")}</button>
+                      <button className="btn sm danger" onClick={() => onDelete(k.id)}>{t("keys.delete")}</button>
                     </div>
                   </td>
                 </tr>

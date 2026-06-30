@@ -3,16 +3,18 @@ import { useNavigate } from "react-router-dom";
 import { createKey } from "../api/keys";
 import KeyForm from "../components/KeyForm";
 import PlainKeyModal from "../components/PlainKeyModal";
+import { useT } from "../i18n";
 
 export default function KeyNew() {
   const nav = useNavigate();
+  const t = useT();
   const [plain, setPlain] = useState<string | null>(null);
 
   return (
     <div>
-      <h2 style={{ marginTop: 0 }}>新建 Key</h2>
+      <h2 style={{ marginTop: 0 }}>{t("new.title")}</h2>
       <KeyForm
-        submitLabel="创建 Key"
+        submitLabel={t("new.create")}
         onCancel={() => nav("/keys")}
         onSubmit={async (v) => {
           const r = await createKey({
@@ -30,7 +32,7 @@ export default function KeyNew() {
       {plain && (
         <PlainKeyModal
           plainKey={plain}
-          title="Key 已创建"
+          title={t("plainModal.created")}
           onClose={() => {
             setPlain(null);
             nav("/keys");
