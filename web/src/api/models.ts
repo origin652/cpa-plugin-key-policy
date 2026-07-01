@@ -151,22 +151,35 @@ function fromAuthFiles(payload: unknown): AuthFileMeta[] {
   return out;
 }
 
-// Extract the tier/plan identity from an auth-files list entry. codex puts it
-// under id_token.claims.plan_type; antigravity under a top-level tier. Returns
-// "" when no recognizable claim is present (→ the file joins the "supported"
-// untiered bucket, never a real tier).
-function readPlanType(entry: Record<string, unknown>): string {
+// Extract the tier/plan identity from an auth-files list entry. codex's
+// ListAuthFiles response flattens the id_token claims directly onto the
+// id_token object (id_token.plan_type), NOT under a nested "claims" key —
+// verified against a live CPA build. We still tolerate the nested shape
+// (id_token.claims.plan_type) defensively in case a future build restructures.
+// antigravity's tier identity isn't exposed on the list entry on current
+// builds; its files fall through to the "supported" bucket (the Scheduler
+// side reads Attributes["tier"] for antigravity, which is a separate path).
+// Returns "" when no recognizable claim is present (→ "supported" bucket).
+// Exported for unit testing against real ListAuthFiles payloads.
+export function readPlanType(entry: Record<string, unknown>): string {
   const idToken = entry["id_token"];
   if (idToken && typeof idToken === "object") {
-    const claims = (idToken as Record<string, unknown>)["claims"];
+    const tok = idToken as Record<string, unknown>;
+    // Primary path (verified live): plan_type flattened directly on id_token.
+    const plan = tok["plan_type"];
+    if (typeof plan === "string" && plan.trim() !== "") {
+      return plan.trim().toLowerCase();
+    }
+    // Defensive fallback: nested under a "claims" sub-object.
+    const claims = tok["claims"];
     if (claims && typeof claims === "object") {
-      const plan = (claims as Record<string,unknown>)["plan_type"];
-      if (typeof plan === "string" && plan.trim() !== "") {
-        return plan.trim().toLowerCase();
+      const nested = (claims as Record<string, unknown>)["plan_type"];
+      if (typeof nested === "string" && nested.trim() !== "") {
+        return nested.trim().toLowerCase();
       }
     }
   }
-  // antigravity exposes tier identity at the top level on some builds.
+  // antigravity tier identity, when present, sits at the top level.
   const tier = entry["tier"];
   if (typeof tier === "string" && tier.trim() !== "") {
     return tier.trim().toLowerCase();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeCatalog, groupByCatalog } from "./models";
+import { normalizeCatalog, groupByCatalog, readPlanType } from "./models";
 
 describe("normalizeCatalog", () => {
   it("flattens provider + string models", () => {
@@ -133,5 +133,38 @@ describe("groupByCatalog", () => {
       { provider: "codex", group: "free", models: ["gpt-5-codex", "gpt-5"] },
       { provider: "codex", group: "team", models: ["gpt-5-codex"] },
     ]);
+  });
+});
+
+describe("readPlanType", () => {
+  // Regression: a live CPA ListAuthFiles response flattens the id_token claims
+  // directly onto id_token (id_token.plan_type), NOT under a nested "claims"
+  // key. The previous implementation looked for id_token.claims.plan_type and
+  // read "" for every codex file, dropping them all into the "supported" bucket
+  // so no codex·team group ever appeared.
+  it("reads plan_type flattened directly on id_token (live shape)", () => {
+    const entry = {
+      name: "codex-3f40eabe-ultraman@example.com-team.json",
+      id_token: {
+        chatgpt_account_id: "abc",
+        plan_type: "team",
+        chatgpt_subscription_active_until: "2026-07-02T06:31:01+00:00",
+      },
+    };
+    expect(readPlanType(entry)).toBe("team");
+  });
+
+  it("tolerates a nested id_token.claims.plan_type shape", () => {
+    const entry = { id_token: { claims: { plan_type: "free" } } };
+    expect(readPlanType(entry)).toBe("free");
+  });
+
+  it("returns empty when no plan_type is present (→ supported bucket)", () => {
+    expect(readPlanType({ id_token: { chatgpt_account_id: "x" } })).toBe("");
+    expect(readPlanType({ name: "codex-no-claim.json" })).toBe("");
+  });
+
+  it("lowercases and trims the plan value", () => {
+    expect(readPlanType({ id_token: { plan_type: "  Team  " } })).toBe("team");
   });
 });
