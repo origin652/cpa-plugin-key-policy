@@ -1,7 +1,7 @@
 {
   "name": "cpa-key-policy-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.2",
   "type": "module",
   "description": "Management UI for the cpa-key-policy CLIProxyAPI plugin.",
   "scripts": {
