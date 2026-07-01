@@ -109,7 +109,7 @@ func TestUsageUnpricedAliasNotBilled(t *testing.T) {
 		Keys: []KeyConfig{{
 			ID: "cheap", Enabled: true, DailyLimitUSD: 0.01,
 			KeyHash: hashForUsageTest(t, "cpa_cheap"),
-			Models: []ModelRule{{Alias: "fast", Provider: "codex", TargetModel: "gpt-5-codex"}}, // no prices
+			Models:  []ModelRule{{Alias: "fast", Provider: "codex", TargetModel: "gpt-5-codex"}}, // no prices
 		}},
 	})
 	if err != nil {
@@ -262,9 +262,9 @@ func newCacheStore(t *testing.T, now time.Time, provider string) *Store {
 			KeyPreview: "cpa_ca...che",
 			Models: []ModelRule{{
 				Alias: "fast", Provider: provider, TargetModel: "m",
-				InputPricePerMillion:      3,
-				OutputPricePerMillion:     15,
-				CacheReadPricePerMillion:  0.30,
+				InputPricePerMillion:     3,
+				OutputPricePerMillion:    15,
+				CacheReadPricePerMillion: 0.30,
 			}},
 		}},
 	}); err != nil {

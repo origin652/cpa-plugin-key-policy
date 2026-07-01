@@ -72,6 +72,7 @@
     "priceLabel": "Model unit price (USD / per million tokens; 0 = not billed)",
     "colAlias": "Alias",
     "colProvider": "Provider",
+    "colGroup": "Tier",
     "colInput": "Input $/M",
     "colOutput": "Output $/M",
     "colCacheRead": "Cache read $/M",
@@ -89,8 +90,19 @@
     "loading": "Loading available models…",
     "loadFailed": "Failed to load model list",
     "empty": "No models returned from CPA. Make sure CPA has upstream providers configured.",
-    "searchPlaceholder": "Search provider or model name…",
-    "selected": "{{count}} model(s) selected · alias auto = model name"
+    "searchPlaceholder": "Search provider, tier, or model name…",
+    "selected": "{{count}} model(s) selected · alias auto = model name",
+    "selectAll": "All",
+    "clearAll": "Clear",
+    "tier": {
+      "free": "Free tier",
+      "plus": "Plus",
+      "team": "Team",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "supported": "Untiered",
+      "free-tier": "Free tier"
+    }
   },
   "plainModal": {
     "created": "Key created",

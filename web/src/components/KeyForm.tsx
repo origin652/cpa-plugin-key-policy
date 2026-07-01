@@ -32,6 +32,16 @@ interface PriceRow {
   cache_read_price_per_million: number;
 }
 
+// Price-map key. A model selected under different tiers (codex free vs team)
+// produces two ModelRules with the SAME alias but different groups — pricing
+// must be tracked per (group, alias) so each row keeps its own numbers. The
+// group prefix (lowercased) disambiguates; aliases without a group use the
+// alias alone, preserving the legacy key shape for non-tiered providers.
+function priceKey(m: { alias: string; group?: string }): string {
+  const g = (m.group ?? "").toLowerCase();
+  return (g ? g + "|" : "") + m.alias.toLowerCase();
+}
+
 function parseNum(value: string): number {
   const n = parseFloat(value);
   return Number.isFinite(n) ? n : 0;
@@ -56,7 +66,7 @@ export default function KeyForm({
   const [prices, setPrices] = useState<Record<string, PriceRow>>(() => {
     const out: Record<string, PriceRow> = {};
     for (const m of initial?.models ?? []) {
-      out[m.alias.toLowerCase()] = {
+      out[priceKey(m)] = {
         input_price_per_million: m.input_price_per_million ?? 0,
         output_price_per_million: m.output_price_per_million ?? 0,
         cache_read_price_per_million: m.cache_read_price_per_million ?? 0,
@@ -97,32 +107,36 @@ export default function KeyForm({
     setPrices((prev) => {
       const updated: Record<string, PriceRow> = {};
       for (const m of next) {
-        const key = m.alias.toLowerCase();
+        const key = priceKey(m);
         updated[key] = prev[key] ?? { input_price_per_million: 0, output_price_per_million: 0, cache_read_price_per_million: 0 };
       }
-      // Rows for aliases no longer selected simply aren't copied into `updated`.
+      // Rows for (group,alias) pairs no longer selected simply aren't copied.
       return updated;
     });
   }, []);
 
-  const setPrice = (alias: string, field: keyof PriceRow, value: string) => {
+  const setPrice = (m: ModelRule, field: keyof PriceRow, value: string) => {
+    const key = priceKey(m);
     setPrices((prev) => ({
       ...prev,
-      [alias.toLowerCase()]: {
-        ...(prev[alias.toLowerCase()] ?? { input_price_per_million: 0, output_price_per_million: 0, cache_read_price_per_million: 0 }),
+      [key]: {
+        ...(prev[key] ?? { input_price_per_million: 0, output_price_per_million: 0, cache_read_price_per_million: 0 }),
         [field]: parseNum(value),
       },
     }));
   };
 
   // One-click fill this row from LiteLLM community prices. Replace semantics:
-  // overwrites all three fields (even non-zero user-entered ones).
-  const recommend = (alias: string) => {
-    const row = lookupPrice(priceTable, alias);
+  // overwrites all three fields (even non-zero user-entered ones). Lookup is by
+  // target_model (the real upstream id); the price writes back to this row's
+  // (group, alias) key, so a same-alias row under a different tier is untouched.
+  const recommend = (m: ModelRule) => {
+    const row = lookupPrice(priceTable, m.target_model);
     if (!row) return;
+    const key = priceKey(m);
     setPrices((prev) => ({
       ...prev,
-      [alias.toLowerCase()]: {
+      [key]: {
         input_price_per_million: row.input_price_per_million,
         output_price_per_million: row.output_price_per_million,
         cache_read_price_per_million: row.cache_read_price_per_million,
@@ -139,7 +153,7 @@ export default function KeyForm({
     }
     // Stamp the per-alias pricing back onto the model rules before submit.
     const pricedModels: ModelRule[] = models.map((m) => {
-      const row = prices[m.alias.toLowerCase()];
+      const row = prices[priceKey(m)];
       return {
         ...m,
         input_price_per_million: row?.input_price_per_million ?? 0,
@@ -255,6 +269,7 @@ export default function KeyForm({
                 <tr>
                   <th>{t("keyForm.colAlias")}</th>
                   <th>{t("keyForm.colProvider")}</th>
+                  <th>{t("keyForm.colGroup")}</th>
                   <th>{t("keyForm.colInput")}</th>
                   <th>{t("keyForm.colOutput")}</th>
                   <th title={t("keyForm.colCacheReadHint")}>{t("keyForm.colCacheRead")}</th>
@@ -263,13 +278,14 @@ export default function KeyForm({
               </thead>
               <tbody>
                 {models.map((m) => {
-                  const key = m.alias.toLowerCase();
+                  const key = priceKey(m);
                   const row = prices[key] ?? { input_price_per_million: 0, output_price_per_million: 0, cache_read_price_per_million: 0 };
                   const hint = priceTable ? lookupPrice(priceTable, m.target_model) : null;
                   return (
-                    <tr key={m.alias}>
+                    <tr key={key}>
                       <td className="mono">{m.alias}</td>
                       <td className="muted">{m.provider}</td>
+                      <td className="muted">{m.group ?? "—"}</td>
                       <td>
                         <input
                           className="input"
@@ -277,7 +293,7 @@ export default function KeyForm({
                           min={0}
                           step="0.01"
                           value={row.input_price_per_million}
-                          onChange={(e) => setPrice(m.alias, "input_price_per_million", e.target.value)}
+                          onChange={(e) => setPrice(m, "input_price_per_million", e.target.value)}
                         />
                       </td>
                       <td>
@@ -287,7 +303,7 @@ export default function KeyForm({
                           min={0}
                           step="0.01"
                           value={row.output_price_per_million}
-                          onChange={(e) => setPrice(m.alias, "output_price_per_million", e.target.value)}
+                          onChange={(e) => setPrice(m, "output_price_per_million", e.target.value)}
                         />
                       </td>
                       <td>
@@ -297,7 +313,7 @@ export default function KeyForm({
                           min={0}
                           step="0.01"
                           value={row.cache_read_price_per_million}
-                          onChange={(e) => setPrice(m.alias, "cache_read_price_per_million", e.target.value)}
+                          onChange={(e) => setPrice(m, "cache_read_price_per_million", e.target.value)}
                         />
                       </td>
                       <td>
@@ -305,7 +321,7 @@ export default function KeyForm({
                           <button
                             type="button"
                             className="btn sm"
-                            onClick={() => recommend(m.target_model)}
+                            onClick={() => recommend(m)}
                             title={t("keyForm.recommendTitle")}
                           >
                             {t("keyForm.recommend")}

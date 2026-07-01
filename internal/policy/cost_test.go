@@ -235,7 +235,6 @@ func TestComputeCacheCostBreakdownAdditive(t *testing.T) {
 	}
 }
 
-
 // the policy layer: RecordUsage bills from already-parsed token counts (as
 // delivered by usage.handle), with no response body to parse. Previously only
 // RecordResponseCost existed, which required a parseable body — unreachable

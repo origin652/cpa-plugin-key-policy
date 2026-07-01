@@ -72,6 +72,7 @@
     "priceLabel": "模型单价（美元 / 每百万 token；留 0 = 不计费）",
     "colAlias": "别名",
     "colProvider": "Provider",
+    "colGroup": "档位",
     "colInput": "输入单价 $/M",
     "colOutput": "输出单价 $/M",
     "colCacheRead": "缓存读单价 $/M",
@@ -89,8 +90,19 @@
     "loading": "加载可用模型…",
     "loadFailed": "加载模型列表失败",
     "empty": "未从 CPA 取到任何模型。请确认 CPA 已配置上游 provider。",
-    "searchPlaceholder": "搜索 provider 或模型名…",
-    "selected": "已选 {{count}} 个模型 · 别名自动等于模型名"
+    "searchPlaceholder": "搜索 provider、档位或模型名…",
+    "selected": "已选 {{count}} 个模型 · 别名自动等于模型名",
+    "selectAll": "全选",
+    "clearAll": "全清",
+    "tier": {
+      "free": "免费档",
+      "plus": "Plus",
+      "team": "Team",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "supported": "无档位标识",
+      "free-tier": "免费档"
+    }
   },
   "plainModal": {
     "created": "Key 已创建",

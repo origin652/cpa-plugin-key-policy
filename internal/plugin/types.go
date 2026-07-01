@@ -20,6 +20,15 @@ const (
 
 	MethodResponseInterceptAfter = "response.intercept_after"
 
+	// MethodSchedulerPick is the host->plugin call that asks this plugin to
+	// choose an auth candidate among those available for a routed provider,
+	// before the host's built-in scheduler runs. We use it to honor a ModelRule's
+	// Group: when a downstream key pinned a tier (e.g. codex "team"), we filter
+	// candidates by their plan_type attribute so the request only ever lands on
+	// an auth file of that tier. Returning Handled=false falls back to the host
+	// scheduler, so providers without a tier concept behave as before.
+	MethodSchedulerPick = "scheduler.pick"
+
 	// MethodUsageHandle is the host->plugin call that delivers a finalized
 	// usage record (tokens already parsed by CPA) after a request completes.
 	// This is the billing entry point that ALSO fires for streaming responses
@@ -80,6 +89,7 @@ type Capabilities struct {
 	FrontendAuthProvider          bool `json:"frontend_auth_provider"`
 	FrontendAuthProviderExclusive bool `json:"frontend_auth_provider_exclusive,omitempty"`
 	ModelRouter                   bool `json:"model_router"`
+	Scheduler                     bool `json:"scheduler,omitempty"`
 	ResponseInterceptor           bool `json:"response_interceptor"`
 	UsagePlugin                   bool `json:"usage_plugin"`
 	ManagementAPI                 bool `json:"management_api"`
@@ -120,6 +130,42 @@ type ModelRouteResponse struct {
 	Target      string `json:"Target,omitempty"`
 	TargetModel string `json:"TargetModel,omitempty"`
 	Reason      string `json:"Reason,omitempty"`
+}
+
+// SchedulerPickRequest is the payload of the host->plugin scheduler.pick call.
+// It mirrors pluginapi.SchedulerPickRequest. The plugin only needs Provider,
+// Model, Options.Metadata (carrying the group we stamped at authenticate time)
+// and Candidates[].Attributes (codex plan_type etc.).
+type SchedulerPickRequest struct {
+	Provider   string                   `json:"Provider,omitempty"`
+	Providers  []string                 `json:"Providers,omitempty"`
+	Model      string                   `json:"Model"`
+	Stream     bool                     `json:"Stream,omitempty"`
+	Options    SchedulerPickOptions     `json:"Options"`
+	Candidates []SchedulerAuthCandidate `json:"Candidates"`
+}
+
+type SchedulerPickOptions struct {
+	Headers  map[string][]string `json:"Headers,omitempty"`
+	Metadata map[string]any      `json:"Metadata,omitempty"`
+}
+
+// SchedulerAuthCandidate describes one selectable auth record.
+type SchedulerAuthCandidate struct {
+	ID         string            `json:"ID"`
+	Provider   string            `json:"Provider"`
+	Priority   int               `json:"Priority,omitempty"`
+	Status     string            `json:"Status,omitempty"`
+	Attributes map[string]string `json:"Attributes,omitempty"`
+	Metadata   map[string]any    `json:"Metadata,omitempty"`
+}
+
+type SchedulerPickResponse struct {
+	// AuthID picks a specific candidate; leave empty and set Handled=false to
+	// defer to the host scheduler.
+	AuthID string `json:"AuthID,omitempty"`
+	// Handled reports whether the plugin made a scheduling decision.
+	Handled bool `json:"Handled"`
 }
 
 type ResponseInterceptRequest struct {

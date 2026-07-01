@@ -72,6 +72,7 @@
     "priceLabel": "Цена модели (USD / млн токенов; 0 = не тарифицируется)",
     "colAlias": "Алиас",
     "colProvider": "Provider",
+    "colGroup": "Тир",
     "colInput": "Ввод $/M",
     "colOutput": "Вывод $/M",
     "colCacheRead": "Кэш-чтение $/M",
@@ -89,8 +90,19 @@
     "loading": "Загрузка доступных моделей…",
     "loadFailed": "Ошибка загрузки списка моделей",
     "empty": "CPA не вернул ни одной модели. Убедитесь, что в CPA настроены вышестоящие провайдеры.",
-    "searchPlaceholder": "Поиск провайдера или модели…",
-    "selected": "Выбрано моделей: {{count}} · alias = имя модели"
+    "searchPlaceholder": "Поиск провайдера, тира или модели…",
+    "selected": "Выбрано моделей: {{count}} · alias = имя модели",
+    "selectAll": "Все",
+    "clearAll": "Сброс",
+    "tier": {
+      "free": "Бесплатный тир",
+      "plus": "Plus",
+      "team": "Team",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "supported": "Без тира",
+      "free-tier": "Бесплатный тир"
+    }
   },
   "plainModal": {
     "created": "Ключ создан",

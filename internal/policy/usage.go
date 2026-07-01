@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	dayWindow   = 24 * time.Hour
-	weekWindow  = 7 * 24 * time.Hour
+	dayWindow          = 24 * time.Hour
+	weekWindow         = 7 * 24 * time.Hour
 	usageFlushInterval = 15 * time.Second
 )
 
@@ -18,8 +18,8 @@ const (
 // persists it to the state JSON (see Store.persistUsage). Reads for limit
 // enforcement (Authenticate) and reporting (keys list) go through here.
 type usageLedger struct {
-	mu      sync.Mutex
-	now     func() time.Time
+	mu  sync.Mutex
+	now func() time.Time
 	// usage by key id; nil entry allowed when a key has no usage recorded yet.
 	entries map[string]*UsageState
 }

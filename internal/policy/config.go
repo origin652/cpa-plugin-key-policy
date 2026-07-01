@@ -38,6 +38,14 @@ type ModelRule struct {
 	Alias       string `yaml:"alias" json:"alias"`
 	Provider    string `yaml:"provider" json:"provider"`
 	TargetModel string `yaml:"target_model" json:"target_model"`
+	// Group optionally narrows which auth files serve this alias. Empty means
+	// "any file for the provider" (legacy behavior). The planner sets it for
+	// providers whose auth files carry a tier/plan identity (codex plan_type,
+	// antigravity tier) so the plugin's Scheduler can filter candidates by that
+	// attribute. Format: "<plan>" (e.g. "free", "team", "plus") or "supported"
+	// when codex lacks an id_token claim and the row must NOT be tier-filtered.
+	// UI groups reflect this: codex.free / codex.team / codex.supported / codex.unknown.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
 	// InputPricePerMillion is the USD price per 1M prompt tokens for this alias.
 	InputPricePerMillion float64 `yaml:"input_price_per_million,omitempty" json:"input_price_per_million,omitempty"`
 	// OutputPricePerMillion is the USD price per 1M completion tokens for this alias.
@@ -69,14 +77,14 @@ type UsageState struct {
 //
 //   - CacheReadTokens: cache-hit input tokens billed in this window.
 //   - CacheCostUSD:    the dollar portion billed at the cache-read price
-//                      (only when a cache price was explicitly configured; 0
-//                      when cache hits were folded into the input-price line).
+//     (only when a cache price was explicitly configured; 0
+//     when cache hits were folded into the input-price line).
 //   - InputTokens:     non-cache input tokens billed in this window, i.e. the
-//                      prompt tokens charged at the regular input price. For
-//                      subset providers this is InputTokens - cacheRead; for
-//                      additive providers it is InputTokens + cacheCreation.
-//                      Used as the denominator of hit-rate = cacheRead /
-//                      (cacheRead + InputTokens).
+//     prompt tokens charged at the regular input price. For
+//     subset providers this is InputTokens - cacheRead; for
+//     additive providers it is InputTokens + cacheCreation.
+//     Used as the denominator of hit-rate = cacheRead /
+//     (cacheRead + InputTokens).
 type UsageWindow struct {
 	TotalUSD        float64   `json:"total_usd"`
 	WindowStart     time.Time `json:"window_start,omitempty"`
@@ -149,6 +157,7 @@ func normalizeConfig(cfg *Config) error {
 			model.Alias = strings.TrimSpace(model.Alias)
 			model.Provider = strings.ToLower(strings.TrimSpace(model.Provider))
 			model.TargetModel = strings.TrimSpace(model.TargetModel)
+			model.Group = strings.ToLower(strings.TrimSpace(model.Group))
 			if model.Alias == "" || model.Provider == "" || model.TargetModel == "" {
 				return fmt.Errorf("key %q model entries require alias, provider, and target_model", key.ID)
 			}

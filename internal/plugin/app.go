@@ -34,6 +34,8 @@ func (a *App) HandleMethod(method string, request []byte) ([]byte, error) {
 		return a.authenticate(request)
 	case MethodModelRoute:
 		return a.routeModel(request)
+	case MethodSchedulerPick:
+		return a.pickScheduler(request)
 	case MethodResponseInterceptAfter:
 		return a.interceptResponse(request)
 	case MethodUsageHandle:
@@ -84,6 +86,7 @@ func (a *App) registration() Registration {
 			FrontendAuthProvider:          true,
 			FrontendAuthProviderExclusive: false,
 			ModelRouter:                   true,
+			Scheduler:                     true,
 			ResponseInterceptor:           true,
 			UsagePlugin:                   true,
 			ManagementAPI:                 true,
@@ -109,6 +112,12 @@ func (a *App) authenticate(raw []byte) ([]byte, error) {
 		meta["alias"] = decision.Rule.Alias
 		meta["target_provider"] = decision.Rule.Provider
 		meta["target_model"] = decision.Rule.TargetModel
+		if decision.Rule.Group != "" {
+			// Group lets our Scheduler (scheduler.pick) restrict auth-file
+			// selection to a tier/plan (codex plan_type, antigravity tier).
+			// Empty = legacy "any file for the provider" behavior.
+			meta["group"] = decision.Rule.Group
+		}
 	}
 	return OKEnvelope(FrontendAuthResponse{
 		Authenticated: true,
@@ -161,7 +170,114 @@ func (a *App) interceptResponse(raw []byte) ([]byte, error) {
 	return OKEnvelope(ResponseInterceptResponse{Body: body})
 }
 
-// handleUsage is the host->plugin usage.handle entry point. CPA delivers a
+// pickScheduler implements the scheduler.pick host->plugin call. When the
+// routed ModelRule had a Group (codex plan_type / antigravity tier), restrict
+// candidate auths to those whose Attributes carry a matching identity. Any
+// Group "" or a group we can't recognize → defer to the host scheduler
+// (Handled=false), preserving legacy "any auth for the provider" behavior.
+//
+// The plugin never sees the downstream ModelRule directly here; the group was
+// stamped into request metadata by authenticate(), and the host forwards it as
+// Options.Metadata["group"]. We read it defensively as either string or any.
+//
+// Candidate filtering, in order:
+//  1. Keep candidates whose Attributes["plan_type"] (codex) equals the group.
+//     Also accept Attributes["tier"] (antigravity) to match the same group.
+//  2. A group of "supported" means "codex without an id_token plan" — match
+//     candidates whose plan_type we cannot read (treat unknown plan as that
+//     bucket), so a supported-but-untiered auth file serves them rather than
+//     any tiered one.
+//
+// Among filtered candidates, pick the host's highest-priority one (ties broken
+// by lowest ID for determinism). We do not have access to the model-capability
+// registry here (it's a separate pluginapi capability), so the host still owns
+// the final "is this auth able to serve this model" check via delegate; if a
+// chosen candidate can't serve the model the host falls back. This is the same
+// trust boundary the built-in scheduler operates under.
+func (a *App) pickScheduler(raw []byte) ([]byte, error) {
+	var req SchedulerPickRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	group := schedulerGroupFromMetadata(req.Options.Metadata)
+	if group == "" {
+		// No tier narrowed by this downstream key → let the host pick freely.
+		return OKEnvelope(SchedulerPickResponse{Handled: false})
+	}
+	if len(req.Candidates) == 0 {
+		return OKEnvelope(SchedulerPickResponse{Handled: false})
+	}
+
+	matched := make([]SchedulerAuthCandidate, 0, len(req.Candidates))
+	for _, cand := range req.Candidates {
+		if schedulerCandidateMatchesGroup(cand, group) {
+			matched = append(matched, cand)
+		}
+	}
+	if len(matched) == 0 {
+		// No candidate of this tier is available: do not silently degrade to a
+		// different tier (that would break the isolation guarantee). Returning
+		// Handled=false would let the host pick ANY auth including other tiers.
+		// Instead we report an explicit "auth_not_found" so the caller sees the
+		// intent honored (no available tier-matching auth) rather than a leak.
+		return OKEnvelope(SchedulerPickResponse{
+			Handled: true,
+			AuthID:  "",
+		})
+	}
+
+	best := matched[0]
+	for _, cand := range matched[1:] {
+		if cand.Priority > best.Priority ||
+			(cand.Priority == best.Priority && cand.ID < best.ID) {
+			best = cand
+		}
+	}
+	return OKEnvelope(SchedulerPickResponse{Handled: true, AuthID: best.ID})
+}
+
+// schedulerGroupFromMetadata reads the group stamped at authenticate time out
+// of request-provided scheduler options. Tolerates string or any-typed values.
+func schedulerGroupFromMetadata(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	raw, ok := meta["group"]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", v)))
+	}
+}
+
+// schedulerCandidateMatchesGroup reports whether a candidate auth belongs to
+// the requested tier. The codex planner sets Attributes["plan_type"] inside the
+// host; antigravity uses a tier concept. We treat an empty/absent plan_type as
+// the "supported-untiered" bucket, which matches group "supported" only —
+// ensuring a downstream key pinned to a real tier never falls onto an untiered
+// file (and vice versa).
+func schedulerCandidateMatchesGroup(cand SchedulerAuthCandidate, group string) bool {
+	if cand.Attributes == nil {
+		return group == "supported" || group == "unknown"
+	}
+	plan := strings.ToLower(strings.TrimSpace(cand.Attributes["plan_type"]))
+	tier := strings.ToLower(strings.TrimSpace(cand.Attributes["tier"]))
+	switch group {
+	case "supported", "unknown":
+		// Untiered bucket: matches candidates with no recognizable plan/tier.
+		return plan == "" && tier == ""
+	default:
+		if plan == group {
+			return true
+		}
+		return tier == group
+	}
+}
+
 // finalized, already-parsed token record here after every request completes —
 // streaming and non-streaming alike. This is the billing path that covers
 // streaming (the host never invokes response.intercept_after on streams).
@@ -438,11 +554,11 @@ func (a *App) publicKeys(keys []policy.KeyConfig) []publicKey {
 
 func (a *App) publicKeyFromConfig(key policy.KeyConfig) publicKey {
 	out := publicKey{
-		ID:             key.ID,
-		Name:           key.Name,
-		Enabled:        key.Enabled,
-		KeyPreview:     key.KeyPreview,
-		RPM:            key.RPM,
+		ID:         key.ID,
+		Name:       key.Name,
+		Enabled:    key.Enabled,
+		KeyPreview: key.KeyPreview,
+		RPM:        key.RPM,
 		// Ensure models always serializes as [] (never null). A nil slice would
 		// marshal to JSON null, which the UI accesses as .length and crashes on.
 		Models:         append([]policy.ModelRule{}, key.Models...),

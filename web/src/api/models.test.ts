@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeCatalog, groupByProvider } from "./models";
+import { normalizeCatalog, groupByCatalog } from "./models";
 
 describe("normalizeCatalog", () => {
   it("flattens provider + string models", () => {
@@ -12,7 +12,7 @@ describe("normalizeCatalog", () => {
     ]);
   });
 
-  it("lowercases provider and dedupes case-insensitively", () => {
+  it("lowercases provider and dedupes case-insensitively within a group", () => {
     const out = normalizeCatalog([
       { provider: "Codex", models: ["GPT-5"] },
       { provider: "codex", models: ["gpt-5"] },
@@ -31,7 +31,6 @@ describe("normalizeCatalog", () => {
         ],
       },
     ]);
-    // same provider -> sorted case-insensitively
     expect(out.map((o) => o.model)).toEqual([
       "claude-haiku",
       "claude-opus-4",
@@ -63,22 +62,57 @@ describe("normalizeCatalog", () => {
     expect(out).toEqual([]);
   });
 
-  it("sorts by provider then model", () => {
+  it("sorts by provider, then group, then model", () => {
     const out = normalizeCatalog([
-      { provider: "z", models: ["b", "a"] },
-      { provider: "a", models: ["c"] },
+      { provider: "codex", group: "team", models: ["b"] },
+      { provider: "codex", group: "free", models: ["a"] },
+      { provider: "claude", models: ["c"] },
     ]);
-    expect(out.map((o) => o.provider + "/" + o.model)).toEqual([
-      "a/c",
-      "z/a",
-      "z/b",
+    expect(out.map((o) => o.provider + "/" + (o.group ?? "") + "/" + o.model)).toEqual([
+      "claude//c",
+      "codex/free/a",
+      "codex/team/b",
     ]);
   });
 });
 
-describe("groupByProvider", () => {
-  it("groups models under each provider", () => {
-    const groups = groupByProvider([
+describe("normalizeCatalog tier union", () => {
+  it("de-dupes the same model within the same tier (union of same-tier files)", () => {
+    // Two codex free auth files both supporting gpt-5-codex → one row.
+    const out = normalizeCatalog([
+      { provider: "codex", group: "free", models: ["gpt-5-codex"] },
+      { provider: "codex", group: "free", models: ["gpt-5-codex", "gpt-5"] },
+    ]);
+    expect(out).toEqual([
+      { provider: "codex", group: "free", model: "gpt-5" },
+      { provider: "codex", group: "free", model: "gpt-5-codex" },
+    ]);
+  });
+
+  it("keeps a model as separate rows across different tiers", () => {
+    // gpt-5-codex available under both free and team tiers → two rows so the
+    // user can authorize it pinned to a specific tier.
+    const out = normalizeCatalog([
+      { provider: "codex", group: "free", models: ["gpt-5-codex"] },
+      { provider: "codex", group: "team", models: ["gpt-5-codex"] },
+    ]);
+    expect(out).toEqual([
+      { provider: "codex", group: "free", model: "gpt-5-codex" },
+      { provider: "codex", group: "team", model: "gpt-5-codex" },
+    ]);
+  });
+
+  it("leaves non-tiered providers without a group", () => {
+    const out = normalizeCatalog([
+      { provider: "claude", models: ["claude-sonnet-4"] },
+    ]);
+    expect(out).toEqual([{ provider: "claude", model: "claude-sonnet-4" }]);
+  });
+});
+
+describe("groupByCatalog", () => {
+  it("groups models under each provider (no tiers)", () => {
+    const groups = groupByCatalog([
       { provider: "codex", model: "gpt-5" },
       { provider: "codex", model: "gpt-5-codex" },
       { provider: "claude", model: "claude-sonnet-4" },
@@ -86,6 +120,18 @@ describe("groupByProvider", () => {
     expect(groups).toEqual([
       { provider: "claude", models: ["claude-sonnet-4"] },
       { provider: "codex", models: ["gpt-5", "gpt-5-codex"] },
+    ]);
+  });
+
+  it("splits a tiered provider into subgroups", () => {
+    const groups = groupByCatalog([
+      { provider: "codex", group: "free", model: "gpt-5-codex" },
+      { provider: "codex", group: "team", model: "gpt-5-codex" },
+      { provider: "codex", group: "free", model: "gpt-5" },
+    ]);
+    expect(groups).toEqual([
+      { provider: "codex", group: "free", models: ["gpt-5-codex", "gpt-5"] },
+      { provider: "codex", group: "team", models: ["gpt-5-codex"] },
     ]);
   });
 });
