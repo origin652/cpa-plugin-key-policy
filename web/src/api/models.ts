@@ -306,7 +306,18 @@ export async function fetchCatalog(
 
   await safe(
     c.get("/v0/management/openai-compatibility"),
-    (d) => entries.push(...fromOpenAICompat(d)),
+    (d) => {
+      const compatEntries = fromOpenAICompat(d);
+      // Every provider listed under openai-compatibility is, by construction,
+      // one the user configured a credential for (the list only contains
+      // configured compat entries). Record that so filterByConfigured doesn't
+      // drop their bare entries as "unconfigured".
+      for (const e of compatEntries) {
+        const p = (e.provider ?? "").toLowerCase();
+        if (p) configuredProviders.add(p);
+      }
+      entries.push(...compatEntries);
+    },
   );
 
   // Per-channel API-key endpoints. These responses carry their key list under a

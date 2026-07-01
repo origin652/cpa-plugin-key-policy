@@ -312,4 +312,19 @@ describe("filterByConfigured", () => {
     );
     expect(out.map((e) => e.provider)).toEqual(["Claude"]);
   });
+
+  it("keeps openai-compatibility providers (e.g. opencode) when configured", () => {
+    // Regression: fromOpenAICompat emits bare (group-less) entries whose
+    // provider is the compat entry's name (e.g. "opencode"). fetchCatalog
+    // adds such providers to `configured` so filterByConfigured keeps them —
+    // otherwise a configured opencode channel would vanish from the picker.
+    const entries = [bare("opencode", ["gpt-5"])];
+    const out = filterByConfigured(
+      entries,
+      new Set(["opencode"]),
+      new Set(),
+      new Set(),
+    );
+    expect(out.map((e) => e.provider)).toEqual(["opencode"]);
+  });
 });
