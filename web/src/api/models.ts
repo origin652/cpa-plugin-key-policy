@@ -219,6 +219,13 @@ function fromModelDefinitions(channel: string, payload: unknown): RawEntry[] {
 export async function fetchCatalog(): Promise<CatalogModel[]> {
   const c = apiClient();
   const entries: RawEntry[] = [];
+  // Tiered providers that the auth-files path contributed models for. Filled
+  // during the auth-files pass; read after static definitions load to suppress
+  // bare-group static entries for providers already covered with tier
+  // subgroups (otherwise the user sees both a bare "codex" group from static
+  // definitions and "codex · team" from auth files — a duplicate with no
+  // backing auth file behind the bare group).
+  const authFileTieredProviders = new Set<string>();
 
   const safe = async <T>(p: Promise<{ data: T }>, apply: (d: T) => void) => {
     try {
@@ -261,6 +268,14 @@ export async function fetchCatalog(): Promise<CatalogModel[]> {
           .catch(() => null),
       ),
     );
+    // Track which (tiered) providers the auth-files path actually contributed
+    // models for. When a tiered provider has real auth files, its models come
+    // from here grouped by tier (codex·team / codex·free / codex·supported) —
+    // and the static model-definitions entries for the SAME provider (which
+    // carry no group/tier) are dropped below so the user doesn't see a
+    // duplicate bare "codex" group of models that may have no backing auth
+    // file. A provider with NO auth files keeps its static definitions (e.g.
+    // api-key-only providers), since that's the only source of its models.
     for (const res of perFile) {
       if (!res) continue;
       const fileEntries = fromAuthFileModels(res.meta.provider, res.data);
@@ -270,6 +285,7 @@ export async function fetchCatalog(): Promise<CatalogModel[]> {
           // "supported" bucket for files with no readable tier claim; real
           // tiers keep their plan_type value as the group.
           e.group = res.meta.planType || SUPPORTED_GROUP;
+          authFileTieredProviders.add(provider);
         }
         entries.push(e);
       }
@@ -283,7 +299,22 @@ export async function fetchCatalog(): Promise<CatalogModel[]> {
     );
   }
 
-  return normalizeCatalog(entries);
+  // Suppress bare (group-less) static-definition entries for tiered providers
+  // that auth-files already covered with tier subgroups. Same model then
+  // appears only under its real tier(s), not duplicated as a bare "codex" row
+  // that has no backing auth file. Untiered providers keep all their entries.
+  const suppressed: RawEntry[] = [];
+  for (const e of entries) {
+    if (
+      e.group === undefined &&
+      TIERED_PROVIDERS.has((e.provider ?? "").toLowerCase()) &&
+      authFileTieredProviders.has((e.provider ?? "").toLowerCase())
+    ) {
+      continue;
+    }
+    suppressed.push(e);
+  }
+  return normalizeCatalog(suppressed);
 }
 
 // A picker group: a provider, optionally split by tier (codex free / team /
