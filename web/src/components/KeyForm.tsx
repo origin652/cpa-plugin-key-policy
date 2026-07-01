@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { KeyPublic, ModelRule } from "../types";
 import ModelPicker from "./ModelPicker";
+import { getPriceTable, lookupPrice, type PriceTable } from "../store/modelPrices";
 import { useT } from "../i18n";
 
 export interface KeyFormValues {
@@ -67,6 +68,22 @@ export default function KeyForm({
   const [busy, setBusy] = useState(false);
   const [localErr, setLocalErr] = useState("");
 
+  // LiteLLM price hints (community price table). Loaded once on mount, silent
+  // failure: if null/inflight, the per-row "recommend" affordance simply isn't
+  // rendered. The form is fully usable without it. Never auto-fills prices —
+  // the user must click "recommend" per row (replace semantics, overwrites
+  // whatever was in that row).
+  const [priceTable, setPriceTable] = useState<PriceTable | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void getPriceTable().then((t) => {
+      if (alive) setPriceTable(t);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // ModelPicker emits fresh ModelRule[] on every selection change (and once
   // when the catalog finishes loading). We must NOT let those re-emits wipe
   // pricing the user already typed: when merging, preserve existing rows and
@@ -94,6 +111,21 @@ export default function KeyForm({
       [alias.toLowerCase()]: {
         ...(prev[alias.toLowerCase()] ?? { input_price_per_million: 0, output_price_per_million: 0, cache_read_price_per_million: 0 }),
         [field]: parseNum(value),
+      },
+    }));
+  };
+
+  // One-click fill this row from LiteLLM community prices. Replace semantics:
+  // overwrites all three fields (even non-zero user-entered ones).
+  const recommend = (alias: string) => {
+    const row = lookupPrice(priceTable, alias);
+    if (!row) return;
+    setPrices((prev) => ({
+      ...prev,
+      [alias.toLowerCase()]: {
+        input_price_per_million: row.input_price_per_million,
+        output_price_per_million: row.output_price_per_million,
+        cache_read_price_per_million: row.cache_read_price_per_million,
       },
     }));
   };
@@ -226,12 +258,14 @@ export default function KeyForm({
                   <th>{t("keyForm.colInput")}</th>
                   <th>{t("keyForm.colOutput")}</th>
                   <th title={t("keyForm.colCacheReadHint")}>{t("keyForm.colCacheRead")}</th>
+                  <th title={t("keyForm.colRecommendHint")}>{t("keyForm.colRecommend")}</th>
                 </tr>
               </thead>
               <tbody>
                 {models.map((m) => {
                   const key = m.alias.toLowerCase();
                   const row = prices[key] ?? { input_price_per_million: 0, output_price_per_million: 0, cache_read_price_per_million: 0 };
+                  const hint = priceTable ? lookupPrice(priceTable, m.target_model) : null;
                   return (
                     <tr key={m.alias}>
                       <td className="mono">{m.alias}</td>
@@ -265,6 +299,18 @@ export default function KeyForm({
                           value={row.cache_read_price_per_million}
                           onChange={(e) => setPrice(m.alias, "cache_read_price_per_million", e.target.value)}
                         />
+                      </td>
+                      <td>
+                        {hint && (
+                          <button
+                            type="button"
+                            className="btn sm"
+                            onClick={() => recommend(m.target_model)}
+                            title={t("keyForm.recommendTitle")}
+                          >
+                            {t("keyForm.recommend")}
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
