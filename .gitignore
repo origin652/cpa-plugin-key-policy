@@ -29,3 +29,7 @@ web/vitest.config.js
 # the committed copy is a placeholder so the Go build never fails.
 
 node_modules/
+
+# Local-only patch for pi-mcp-adapter SDK (Stitch MCP ajv fix). Not part
+# of this plugin; kept for the maintainer's local pi setup.
+scripts/patch-pi-mcp-sdk.mjs
