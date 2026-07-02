@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -63,11 +64,11 @@ func (l *usageLedger) snapshot() map[string]*UsageState {
 func (l *usageLedger) entryLocked(id string) *UsageState {
 	st := l.entries[id]
 	if st == nil {
-		st = &UsageState{ByAlias: make(map[string]UsageWindow)}
+		st = &UsageState{ByAlias: make(map[string]AliasUsageWindows)}
 		l.entries[id] = st
 	}
 	if st.ByAlias == nil {
-		st.ByAlias = make(map[string]UsageWindow)
+		st.ByAlias = make(map[string]AliasUsageWindows)
 	}
 	return st
 }
@@ -124,8 +125,9 @@ func sameDay(a, b time.Time) bool {
 // that bill attributable to cache-hit input tokens priced at the cache price
 // (0 when no cache price was configured); cacheReadTokens is the cache-hit
 // count for the record; inputTokens is the non-cache input-token count charged
-// at the regular input price (the denominator partner for hit-rate).
-func (l *usageLedger) RecordCost(id, alias string, amount, cacheCost float64, cacheReadTokens, inputTokens int64, callCount int64) {
+// at the regular input price (the denominator partner for hit-rate);
+// outputTokens is the completion-token count charged at the output price.
+func (l *usageLedger) RecordCost(id, alias string, amount, cacheCost float64, cacheReadTokens, inputTokens, outputTokens int64, callCount int64) {
 	if id == "" {
 		return
 	}
@@ -151,15 +153,27 @@ func (l *usageLedger) RecordCost(id, alias string, amount, cacheCost float64, ca
 		st.Daily.InputTokens += inputTokens
 		st.Weekly.InputTokens += inputTokens
 	}
+	if outputTokens > 0 {
+		st.Daily.OutputTokens += outputTokens
+		st.Weekly.OutputTokens += outputTokens
+	}
 
-	aliasW := st.ByAlias[alias]
-	l.ensureAliasWindowLocked(&aliasW, true, now)
-	aliasW.TotalUSD += amount
-	aliasW.CallCount += callCount
-	aliasW.CacheReadTokens += cacheReadTokens
-	aliasW.CacheCostUSD += cacheCost
-	aliasW.InputTokens += inputTokens
-	st.ByAlias[alias] = aliasW
+	aliasEntry := st.ByAlias[alias]
+	l.ensureAliasWindowLocked(&aliasEntry.Daily, true, now)
+	l.ensureAliasWindowLocked(&aliasEntry.Weekly, false, now)
+	aliasEntry.Daily.TotalUSD += amount
+	aliasEntry.Weekly.TotalUSD += amount
+	aliasEntry.Daily.CallCount += callCount
+	aliasEntry.Weekly.CallCount += callCount
+	aliasEntry.Daily.CacheReadTokens += cacheReadTokens
+	aliasEntry.Weekly.CacheReadTokens += cacheReadTokens
+	aliasEntry.Daily.CacheCostUSD += cacheCost
+	aliasEntry.Weekly.CacheCostUSD += cacheCost
+	aliasEntry.Daily.InputTokens += inputTokens
+	aliasEntry.Weekly.InputTokens += inputTokens
+	aliasEntry.Daily.OutputTokens += outputTokens
+	aliasEntry.Weekly.OutputTokens += outputTokens
+	st.ByAlias[alias] = aliasEntry
 }
 
 // UsageSummary is what the keys-list API reports for a key. The cache fields are
@@ -206,7 +220,7 @@ func (l *usageLedger) Summary(key KeyConfig) UsageSummary {
 	// window that already aged out.
 	ensureSt := *st
 	if ensureSt.ByAlias == nil {
-		ensureSt.ByAlias = make(map[string]UsageWindow)
+		ensureSt.ByAlias = make(map[string]AliasUsageWindows)
 	}
 	l.ensureDailyWindowLocked(&ensureSt, now)
 	l.ensureWeeklyWindowLocked(&ensureSt, now)
@@ -248,4 +262,67 @@ func (l *usageLedger) resetUsage(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.entries, id)
+}
+
+// AliasUsageEntry is one row of the per-alias usage breakdown reported by the
+// key detail API. Configured aliases appear with InConfig=true (zero values
+// when unused); aliases with historical usage that are no longer in the key's
+// config appear with InConfig=false. Daily/Weekly are the current (re-evaluated)
+// windows for that alias.
+type AliasUsageEntry struct {
+	Alias       string      `json:"alias"`
+	Provider    string      `json:"provider,omitempty"`
+	TargetModel string      `json:"target_model,omitempty"`
+	BillingMode string      `json:"billing_mode,omitempty"`
+	PerCallUSD  float64     `json:"per_call_usd,omitempty"`
+	InConfig    bool        `json:"in_config"`
+	Daily       UsageWindow `json:"daily"`
+	Weekly      UsageWindow `json:"weekly"`
+}
+
+// AliasUsage returns a per-alias usage breakdown for a key: configured aliases
+// (zero values when unused) merged with ledger residuals (aliases that have
+// historical usage but are no longer in the key's config, InConfig=false).
+// Windows are re-evaluated on read so an aged-out weekly total resets for
+// display (the read does not mutate the ledger; the next write commits the
+// reset, mirroring Summary). Rows are sorted by alias for stable display.
+func (l *usageLedger) AliasUsage(key KeyConfig) []AliasUsageEntry {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	byAlias := make(map[string]AliasUsageEntry, len(key.Models))
+	for _, rule := range key.Models {
+		byAlias[rule.Alias] = AliasUsageEntry{
+			Alias:       rule.Alias,
+			Provider:    rule.Provider,
+			TargetModel: rule.TargetModel,
+			BillingMode: rule.BillingMode,
+			PerCallUSD:  rule.PerCallUSD,
+			InConfig:    true,
+		}
+	}
+
+	if st := l.entries[key.ID]; st != nil {
+		for alias, w := range st.ByAlias {
+			// Re-evaluate windows on a local copy so a stale weekly total resets
+			// for display without mutating the ledger.
+			l.ensureAliasWindowLocked(&w.Daily, true, now)
+			l.ensureAliasWindowLocked(&w.Weekly, false, now)
+			entry, ok := byAlias[alias]
+			if !ok {
+				entry = AliasUsageEntry{Alias: alias, InConfig: false}
+			}
+			entry.Daily = w.Daily
+			entry.Weekly = w.Weekly
+			byAlias[alias] = entry
+		}
+	}
+
+	out := make([]AliasUsageEntry, 0, len(byAlias))
+	for _, entry := range byAlias {
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Alias < out[j].Alias })
+	return out
 }

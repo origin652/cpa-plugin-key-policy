@@ -6,6 +6,7 @@ import Login from "./pages/Login";
 import KeyList from "./pages/KeyList";
 import KeyNew from "./pages/KeyNew";
 import KeyEdit from "./pages/KeyEdit";
+import KeyUsage from "./pages/KeyUsage";
 
 function useAuthTick() {
   const [, setTick] = useState(0);
@@ -71,6 +72,7 @@ function Shell() {
         <Route path="/keys" element={<KeyList />} />
         <Route path="/keys/new" element={<KeyNew />} />
         <Route path="/keys/:id/edit" element={<KeyEdit />} />
+        <Route path="/keys/:id/usage" element={<KeyUsage />} />
         <Route path="*" element={<Navigate to="/keys" replace />} />
       </Routes>
     </div>

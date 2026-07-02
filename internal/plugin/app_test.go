@@ -613,3 +613,85 @@ keys:
 		t.Fatalf("daily usd = %v, want 1.00", s.DailyUSD)
 	}
 }
+
+// TestManagementKeyUsageEndpoint: GET /keys/usage?id=... returns the per-alias
+// breakdown for a key after usage.handle billing. Verifies the response shape
+// (key_id/key_name/aliases), per-alias daily+weekly figures, output tokens, and
+// the 404 for an unknown key.
+func TestManagementKeyUsageEndpoint(t *testing.T) {
+	app, _ := configurePricedApp(t)
+
+	// Bill 200K input + 100K output @ $1/$1 = $0.20 + $0.10 = $0.30.
+	usageReq, _ := json.Marshal(UsageHandleRequest{
+		APIKey: "priced", Alias: "fast", Model: "gpt-5-codex",
+		Detail: UsageDetail{InputTokens: 200_000, OutputTokens: 100_000, TotalTokens: 300_000},
+	})
+	if _, err := app.HandleMethod(MethodUsageHandle, usageReq); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := json.Marshal(ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/plugins/cpa-key-policy/keys/usage",
+		Query:  url.Values{"id": {"priced"}},
+	})
+	raw, err := app.HandleMethod(MethodManagementHandle, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := managementResponseFromEnvelope(t, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+	var got struct {
+		KeyID   string                     `json:"key_id"`
+		KeyName string                     `json:"key_name"`
+		Aliases []policy.AliasUsageEntry `json:"aliases"`
+	}
+	if err := json.Unmarshal(resp.Body, &got); err != nil {
+		t.Fatalf("unmarshal: %v, body=%s", err, resp.Body)
+	}
+	if got.KeyID != "priced" || len(got.Aliases) != 1 {
+		t.Fatalf("usage response = %+v, want key_id=priced 1 alias", got)
+	}
+	a := got.Aliases[0]
+	if a.Alias != "fast" || !a.InConfig || a.Provider != "codex" {
+		t.Fatalf("alias row = %+v, want fast/in_config/codex", a)
+	}
+	if !nearly(a.Daily.TotalUSD, 0.30) || !nearly(a.Weekly.TotalUSD, 0.30) {
+		t.Fatalf("alias usd = %+v, want 0.30/0.30", a)
+	}
+	if a.Daily.CallCount != 1 || a.Daily.InputTokens != 200_000 || a.Daily.OutputTokens != 100_000 {
+		t.Fatalf("alias daily counters = %+v, want 1/200000/100000", a.Daily)
+	}
+
+	// Missing id → 400.
+	badReq, _ := json.Marshal(ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/plugins/cpa-key-policy/keys/usage",
+	})
+	badResp := managementResponseFromEnvelope(t, mustHandle(t, app, MethodManagementHandle, badReq))
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing id status = %d, want 400", badResp.StatusCode)
+	}
+
+	// Unknown id → 404.
+	nopeReq, _ := json.Marshal(ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/plugins/cpa-key-policy/keys/usage",
+		Query:  url.Values{"id": {"nope"}},
+	})
+	nopeResp := managementResponseFromEnvelope(t, mustHandle(t, app, MethodManagementHandle, nopeReq))
+	if nopeResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown id status = %d, want 404", nopeResp.StatusCode)
+	}
+}
+
+func mustHandle(t *testing.T, app *App, method string, req []byte) []byte {
+	t.Helper()
+	raw, err := app.HandleMethod(method, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}

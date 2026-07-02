@@ -277,3 +277,43 @@ td .mono, .mono { font-family: "Courier Prime", ui-monospace, Consolas, "Courier
 .switch input:checked + .track { background: var(--accent); }
 .switch input:checked + .track .thumb { transform: translateX(20px); }
 .switch input:focus-visible + .track { box-shadow: 0 0 0 3px var(--accent-ring); }
+
+/* ===== Key detail (KeyUsage) page ===== */
+/* Right-aligned numeric cells: applied via the .num class on th/td. Keeps the
+   per-alias usage table's USD / token / call-count columns tidy and scannable. */
+th.num, td.num { text-align: right; }
+/* "strong" = emphasized numeric value (the USD total per alias row). */
+td.strong { font-weight: 600; color: var(--text); }
+
+/* Header row: back button + key id (mono) + name on the left, daily/weekly
+   window toggle on the right. Mirrors the Stitch design's header layout but
+   reuses .btn instead of pill styling for consistency with the rest of the UI. */
+.keyusage-header {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+  margin-bottom: 16px; padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.keyusage-idline { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.keyusage-id { font-size: 13px; background: var(--panel-2); color: var(--muted);
+  padding: 2px 8px; border-radius: var(--r-sm); border: 1px solid var(--border); }
+.keyusage-toggle { display: inline-flex; gap: 6px; }
+
+/* Empty-state hint above the table: subtle italic muted text. */
+.keyusage-empty {
+  font-style: italic; padding: 10px 14px 18px; font-size: 13px;
+}
+/* No-alias fallback row (a key with zero configured models). */
+.keyusage-noalias { text-align: center; padding: 28px 14px; }
+
+/* Residual alias rows (in_config=false): keep them readable but visually
+   de-emphasized so admins can distinguish historical-only aliases from active
+   ones. The badge marks them inline next to the alias. */
+.keyusage-residual td { opacity: 0.85; }
+.keyusage-badge {
+  display: inline-block; margin-top: 3px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--danger); background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--r-sm); padding: 1px 6px;
+}

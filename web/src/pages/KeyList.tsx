@@ -159,6 +159,9 @@ export default function KeyList() {
                   <td>{(k.models ?? []).length}</td>
                   <td>
                     <div className="actions">
+                      <Link to={`/keys/${encodeURIComponent(k.id)}/usage`}>
+                        <button className="btn sm" title={t("keys.detail")}>{t("keys.detail")}</button>
+                      </Link>
                       <Link to={`/keys/${encodeURIComponent(k.id)}/edit`}>
                         <button className="btn sm">{t("keys.edit")}</button>
                       </Link>

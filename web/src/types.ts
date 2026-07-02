@@ -83,6 +83,40 @@ export interface RotateKeyResponse {
   generated: boolean;
 }
 
+// UsageWindow mirrors policy.UsageWindow: a dollar total bound to a window
+// start, plus cache/input/output/call counters for display. The key detail
+// page reads one Daily and one Weekly per alias.
+export interface UsageWindow {
+  total_usd: number;
+  window_start?: string;
+  cache_read_tokens?: number;
+  cache_cost_usd?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  call_count?: number;
+}
+
+// AliasUsageEntry mirrors policy.AliasUsageEntry: one row of the per-alias
+// usage breakdown for a key. Configured aliases have in_config=true; aliases
+// with historical usage that are no longer in the key's config have
+// in_config=false (residuals).
+export interface AliasUsageEntry {
+  alias: string;
+  provider?: string;
+  target_model?: string;
+  billing_mode?: "tokens" | "per_call";
+  per_call_usd?: number;
+  in_config: boolean;
+  daily: UsageWindow;
+  weekly: UsageWindow;
+}
+
+export interface KeyUsageResponse {
+  key_id: string;
+  key_name: string;
+  aliases: AliasUsageEntry[];
+}
+
 // A model the user can pick when creating/editing a key.
 export interface CatalogModel {
   provider: string;

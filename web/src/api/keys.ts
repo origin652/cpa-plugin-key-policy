@@ -4,6 +4,7 @@ import type {
   KeyWriteRequest,
   CreateKeyResponse,
   RotateKeyResponse,
+  KeyUsageResponse,
 } from "../types";
 
 export async function listKeys(): Promise<KeyPublic[]> {
@@ -45,6 +46,17 @@ export async function rotateKey(id: string): Promise<RotateKeyResponse> {
 export async function resetRPM(id: string): Promise<void> {
   const c = apiClient();
   await c.post(pluginPath("/keys/reset-rpm"), { id });
+}
+
+// fetchKeyUsage returns the per-alias usage breakdown for one key (the key
+// detail subpage data source). id goes through the query string, matching the
+// rotate/reset-rpm/delete convention.
+export async function fetchKeyUsage(id: string): Promise<KeyUsageResponse> {
+  const c = apiClient();
+  const { data } = await c.get<KeyUsageResponse>(pluginPath("/keys/usage"), {
+    params: { id },
+  });
+  return data;
 }
 
 // Build ModelRule[] from selected catalog models with alias = target_model.

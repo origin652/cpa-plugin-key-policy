@@ -228,7 +228,7 @@ func (s *Store) RecordResponseCost(headers http.Header, query map[string][]strin
 		// input tokens for hit-rate denominator parity (treat all prompt tokens
 		// as non-cache input on this path, since we can't tell otherwise).
 		// callCount=1: this was a successful, token-billed request.
-		s.usage.RecordCost(key.ID, alias, cost, 0, 0, int64(usage.PromptTokens), 1)
+		s.usage.RecordCost(key.ID, alias, cost, 0, 0, int64(usage.PromptTokens), int64(usage.CompletionTokens), 1)
 	}
 	return cost
 }
@@ -293,7 +293,7 @@ func (s *Store) RecordUsage(apiKeyOrID, alias, model string, failed bool, detail
 		}
 		if s.usage != nil {
 			// callCount=1 regardless of cost (even free calls count toward volume).
-			s.usage.RecordCost(key.ID, resolved, cost, 0, 0, 0, 1)
+			s.usage.RecordCost(key.ID, resolved, cost, 0, 0, 0, 0, 1)
 		}
 		return cost
 	}
@@ -337,7 +337,7 @@ func (s *Store) RecordUsage(apiKeyOrID, alias, model string, failed bool, detail
 	}
 	if cost > 0 && s.usage != nil {
 		// callCount=1: this was a successful, token-billed request.
-		s.usage.RecordCost(key.ID, resolved, cost, cacheCost, cacheReadTokens, nonCacheInput, 1)
+		s.usage.RecordCost(key.ID, resolved, cost, cacheCost, cacheReadTokens, nonCacheInput, int64(detail.OutputTokens), 1)
 	}
 	return cost
 }
@@ -356,6 +356,33 @@ func (s *Store) ResetUsage(id string) {
 	if s.usage != nil {
 		s.usage.resetUsage(id)
 	}
+}
+
+// AliasUsageFor returns a per-alias usage breakdown for the key with the given
+// id, for the key detail management API. Returns the key config, the alias
+// rows, and whether the key was found. Configured-but-unused aliases appear
+// with zero values; ledger residuals for aliases no longer in the key's config
+// appear with InConfig=false. Rows are sorted by alias.
+func (s *Store) AliasUsageFor(keyID string) (KeyConfig, []AliasUsageEntry, bool) {
+	key := s.findByID(keyID)
+	if key == nil {
+		return KeyConfig{}, nil, false
+	}
+	if s.usage == nil {
+		rows := make([]AliasUsageEntry, 0, len(key.Models))
+		for _, r := range key.Models {
+			rows = append(rows, AliasUsageEntry{
+				Alias:       r.Alias,
+				Provider:    r.Provider,
+				TargetModel: r.TargetModel,
+				BillingMode: r.BillingMode,
+				PerCallUSD:  r.PerCallUSD,
+				InConfig:    true,
+			})
+		}
+		return *key, rows, true
+	}
+	return *key, s.usage.AliasUsage(*key), true
 }
 
 func (s *Store) findBySecret(raw string) *KeyConfig {

@@ -47,7 +47,8 @@
     "resetFailed": "Ошибка сброса",
     "deleteFailed": "Ошибка удаления",
     "notFound": "Ключ не найден",
-    "rotated": "Создан новый ключ (смена)"
+    "rotated": "Создан новый ключ (смена)",
+    "detail": "Детали"
   },
   "edit": {
     "title": "Изменить ключ · {{id}}",
@@ -125,5 +126,29 @@
     "cache": "Кэш",
     "hitRate": "{{rate}}% попаданий",
     "calls": "вызовы (сегодня / неделя)"
+  },
+  "keyUsage": {
+    "title": "Детализация использования ключа",
+    "back": "← Назад",
+    "loading": "Загрузка…",
+    "loadFailed": "Ошибка загрузки",
+    "notFound": "Ключ не найден",
+    "empty": "Для этого ключа пока нет данных об использовании",
+    "noAlias": "У этого ключа нет настроенных псевдонимов моделей",
+    "windowToggle": "Переключение окна использования",
+    "tabDaily": "Сегодня",
+    "tabWeekly": "На неделе",
+    "colAlias": "Псевдоним",
+    "colBillingMode": "Биллинг",
+    "colProvider": "Provider",
+    "colUsd": "USD",
+    "colCalls": "Вызовы",
+    "colInput": "Input tokens",
+    "colOutput": "Output tokens",
+    "colCache": "Cache tokens",
+    "colHitRate": "Попадания",
+    "billingTokens": "токены",
+    "billingPerCall": "за вызов",
+    "notInConfig": "нет в конфиге"
   }
 }

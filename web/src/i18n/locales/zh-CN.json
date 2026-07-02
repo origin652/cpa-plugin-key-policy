@@ -47,7 +47,8 @@
     "resetFailed": "重置失败",
     "deleteFailed": "删除失败",
     "notFound": "未找到该 key",
-    "rotated": "新 Key 已生成（轮换）"
+    "rotated": "新 Key 已生成（轮换）",
+    "detail": "详情"
   },
   "edit": {
     "title": "编辑 Key · {{id}}",
@@ -123,6 +124,31 @@
     "thisWeek": "本周",
     "unlimited": "不限",
     "cache": "缓存",
-    "hitRate": "命中 {{rate}}%"
+    "hitRate": "命中 {{rate}}%",
+    "calls": "调用次（今日 / 本周）"
+  },
+  "keyUsage": {
+    "title": "Key 用量详情",
+    "back": "← 返回",
+    "loading": "加载中…",
+    "loadFailed": "加载失败",
+    "notFound": "未找到该 key",
+    "empty": "该 key 暂无用量记录",
+    "noAlias": "该 key 未配置任何模型别名",
+    "windowToggle": "用量窗口切换",
+    "tabDaily": "今日",
+    "tabWeekly": "本周",
+    "colAlias": "别名",
+    "colBillingMode": "计费方式",
+    "colProvider": "Provider",
+    "colUsd": "USD",
+    "colCalls": "调用次数",
+    "colInput": "Input tokens",
+    "colOutput": "Output tokens",
+    "colCache": "Cache tokens",
+    "colHitRate": "命中率",
+    "billingTokens": "按 token",
+    "billingPerCall": "按次",
+    "notInConfig": "已不在配置中"
   }
 }

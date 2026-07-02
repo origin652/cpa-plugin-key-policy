@@ -47,7 +47,8 @@
     "resetFailed": "Reset failed",
     "deleteFailed": "Delete failed",
     "notFound": "Key not found",
-    "rotated": "New key generated (rotated)"
+    "rotated": "New key generated (rotated)",
+    "detail": "Detail"
   },
   "edit": {
     "title": "Edit Key · {{id}}",
@@ -125,5 +126,29 @@
     "cache": "Cache",
     "hitRate": "{{rate}}% hit",
     "calls": "calls (today / week)"
+  },
+  "keyUsage": {
+    "title": "Key usage detail",
+    "back": "← Back",
+    "loading": "Loading…",
+    "loadFailed": "Load failed",
+    "notFound": "Key not found",
+    "empty": "No usage recorded for this key yet",
+    "noAlias": "This key has no model aliases configured",
+    "windowToggle": "Usage window switch",
+    "tabDaily": "Today",
+    "tabWeekly": "This week",
+    "colAlias": "Alias",
+    "colBillingMode": "Billing",
+    "colProvider": "Provider",
+    "colUsd": "USD",
+    "colCalls": "Calls",
+    "colInput": "Input tokens",
+    "colOutput": "Output tokens",
+    "colCache": "Cache tokens",
+    "colHitRate": "Hit rate",
+    "billingTokens": "tokens",
+    "billingPerCall": "per call",
+    "notInConfig": "not in config"
   }
 }
