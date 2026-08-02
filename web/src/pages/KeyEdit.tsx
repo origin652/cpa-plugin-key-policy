@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
-import { listKeys, patchKey, rotateKey, resetRPM, deleteKey } from "../api/keys";
+import { listKeys, patchKey, rotateKey, deleteKey } from "../api/keys";
 import type { KeyPublic, ModelRule } from "../types";
 import KeyForm from "../components/KeyForm";
+import KeyResetMenu from "../components/KeyResetMenu";
 import PlainKeyModal from "../components/PlainKeyModal";
 import { MobileFormHeader, MobileTabBar } from "./KeyList";
 import { useT } from "../i18n";
@@ -61,13 +62,6 @@ export default function KeyEdit() {
       alert((e as Error).message ?? t("keys.rotateFailed"));
     }
   };
-  const onReset = async () => {
-    try {
-      await resetRPM(key.id);
-    } catch (e) {
-      alert((e as Error).message ?? t("keys.resetFailed"));
-    }
-  };
   const onDelete = async () => {
     if (!confirm(t("keys.deleteConfirm", { id: key.id }))) return;
     try {
@@ -83,7 +77,7 @@ export default function KeyEdit() {
       <div className="fp-head mobile-hidden">
         <h1>{t("edit.hTitle")}</h1>
         <div className="fp-actions">
-          <button className="btn sm" onClick={onReset}>{t("keys.resetRpm")}</button>
+          <KeyResetMenu keyId={key.id} />
           <button className="btn sm" onClick={onRotate}>{t("keys.rotate")}</button>
           <button className="btn sm" onClick={() => nav("/keys")}>{t("keyForm.cancel")}</button>
         </div>

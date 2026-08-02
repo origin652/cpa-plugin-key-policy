@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -485,6 +486,7 @@ func (a *App) managementRegistration() ManagementRegistrationResponse {
 			{Method: http.MethodDelete, Path: base + "/keys", Description: "Delete a downstream CPA key policy by id."},
 			{Method: http.MethodPost, Path: base + "/keys/rotate", Description: "Rotate one downstream CPA key by id."},
 			{Method: http.MethodPost, Path: base + "/keys/reset-rpm", Description: "Reset one downstream CPA key RPM counter by id."},
+			{Method: http.MethodPost, Path: base + "/keys/reset-usage", Description: "Reset one downstream CPA key daily or weekly usage window by id."},
 			{Method: http.MethodGet, Path: base + "/keys/usage", Description: "Per-alias usage breakdown for one downstream CPA key by id."},
 			{Method: http.MethodGet, Path: base + "/status", Description: "Show cpa-key-policy runtime status."},
 			{Method: http.MethodGet, Path: base + "/aliases", Description: "List the global alias mapping table."},
@@ -532,6 +534,8 @@ func (a *App) handleManagement(raw []byte) ([]byte, error) {
 		return OKEnvelope(a.rotateKey(idFromRequest(req.Query, req.Body)))
 	case req.Method == http.MethodPost && path == base+"/keys/reset-rpm":
 		return OKEnvelope(a.resetRPM(idFromRequest(req.Query, req.Body)))
+	case req.Method == http.MethodPost && path == base+"/keys/reset-usage":
+		return OKEnvelope(a.resetUsage(req.Body))
 	case req.Method == http.MethodGet && path == base+"/keys/usage":
 		return OKEnvelope(a.keyUsage(idFromRequest(req.Query, req.Body)))
 	case req.Method == http.MethodGet && path == base+"/status":
@@ -730,6 +734,33 @@ func (a *App) resetRPM(id string) ManagementResponse {
 		return jsonError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"reset": true, "id": strings.TrimSpace(id)})
+}
+
+func (a *App) resetUsage(body []byte) ManagementResponse {
+	var req struct {
+		ID     string                  `json:"id"`
+		Window policy.UsageResetWindow `json:"window"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return jsonError(http.StatusBadRequest, "invalid_json", err.Error())
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	if req.ID == "" {
+		return jsonError(http.StatusBadRequest, "missing_id", "id is required")
+	}
+	result, err := a.store.ResetUsageWindow(req.ID, req.Window)
+	if err != nil {
+		switch {
+		case errors.Is(err, policy.ErrUnknownKey):
+			return jsonError(http.StatusNotFound, "not_found", "key not found")
+		case errors.Is(err, policy.ErrInvalidUsageResetWindow):
+			return jsonError(http.StatusBadRequest, "invalid_window", "window must be daily or weekly")
+		default:
+			return jsonError(http.StatusInternalServerError, "reset_failed", err.Error())
+		}
+	}
+	log.Printf("cpa-key-policy: usage reset key_id=%q window=%s before_daily_usd=%.6f before_weekly_usd=%.6f", result.KeyID, result.Window, result.BeforeDailyUSD, result.BeforeWeeklyUSD)
+	return jsonResponse(http.StatusOK, result)
 }
 
 // keyUsage returns the per-alias usage breakdown for one downstream key (the

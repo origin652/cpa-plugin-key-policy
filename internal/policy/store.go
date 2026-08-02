@@ -42,6 +42,10 @@ type Store struct {
 	onClassifyRulesChanged func()
 }
 
+// ErrInvalidUsageResetWindow reports an unsupported administrative usage
+// reset window.
+var ErrInvalidUsageResetWindow = errors.New("invalid usage reset window")
+
 // pendingPick is one Authenticate-time target selection waiting for Route.
 type pendingPick struct {
 	rule ModelRule
@@ -507,10 +511,18 @@ func (s *Store) RecordResponseCost(headers http.Header, query map[string][]strin
 		return 0
 	}
 	_, usageLedger := s.runtimeComponents()
-	alias := strings.TrimSpace(requested)
-	if alias == "" {
+	requestedAlias := strings.TrimSpace(requested)
+	if requestedAlias == "" {
 		return 0
 	}
+	// Resolve to the configured canonical alias spelling so pure case variants
+	// share one ByAlias bucket. Unknown aliases keep zero-cost semantics and
+	// must not create forged empty ledger rows.
+	rule, ok := key.ModelForAlias(requestedAlias)
+	if !ok {
+		return 0
+	}
+	alias := rule.Alias
 	usage := ParseTokenUsage(body)
 	if !usage.Found {
 		return 0
@@ -577,7 +589,14 @@ func (s *Store) RecordUsage(apiKeyOrID, alias, model string, failed bool, detail
 	if resolved == "" {
 		return 0
 	}
-	rule, _ := key.ModelForAlias(resolved)
+	// Canonicalize to the configured rule.Alias spelling so pure case variants
+	// share one ByAlias bucket. Unknown aliases keep existing zero-cost /
+	// reject-at-auth semantics and must not create forged empty ledger rows.
+	rule, ok := key.ModelForAlias(resolved)
+	if !ok {
+		return 0
+	}
+	resolved = rule.Alias
 
 	// Per-call billing: a fixed USD charge per SUCCESSFUL request, independent
 	// of token counts. Failed requests are not charged and don't count. A
@@ -612,10 +631,7 @@ func (s *Store) RecordUsage(apiKeyOrID, alias, model string, failed bool, detail
 	// price (falling back to the input price when none is configured), with
 	// provider-specific semantics for whether cache hits sit inside or outside
 	// InputTokens. The owning rule's provider selects the semantics.
-	provider := ""
-	if rule.Alias != "" {
-		provider = rule.Provider
-	}
+	provider := rule.Provider
 	inputPerMillion, outputPerMillion, cacheReadPerMillion, priced := key.PriceForAlias(resolved)
 	cost, cacheCost, cacheReadTokens := ComputeCacheCostBreakdown(provider, inputPerMillion, outputPerMillion, cacheReadPerMillion, priced, detail)
 	// Non-cache input tokens billed at the input price — the denominator partner
@@ -1053,6 +1069,60 @@ func (s *Store) ResetRPM(id string) error {
 	return nil
 }
 
+// ResetUsageWindow clears one key's daily or weekly usage and persists the
+// change before returning. A weekly reset also clears the daily window.
+func (s *Store) ResetUsageWindow(id string, window UsageResetWindow) (UsageResetResult, error) {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return UsageResetResult{}, errors.New("id is required")
+	}
+	if window != UsageResetDaily && window != UsageResetWeekly {
+		return UsageResetResult{}, fmt.Errorf("%w: %q", ErrInvalidUsageResetWindow, window)
+	}
+
+	s.mu.RLock()
+	_, exists := s.keys[id]
+	usage := s.usage
+	path := s.statePath
+	s.mu.RUnlock()
+	if !exists {
+		return UsageResetResult{}, ErrUnknownKey
+	}
+	if usage == nil {
+		return UsageResetResult{KeyID: id, Window: window}, nil
+	}
+
+	// The flusher takes persistMu before snapshotting the ledger, so take the
+	// same lock order here. This prevents a pre-reset flush snapshot from being
+	// written after the reset has already been persisted. Keep usage.mu through
+	// the atomic state-file write as well: this establishes a single reset cut
+	// and lets a failed write restore the exact pre-reset ledger without
+	// overwriting usage recorded concurrently. Resets are low-frequency admin
+	// operations, so the short accounting-path stall is an intentional tradeoff.
+	s.persistMu.Lock()
+	usage.mu.Lock()
+	previous, hadPrevious := usage.entries[id]
+	previous = cloneUsageState(previous)
+	result := usage.resetWindowLocked(id, window, usage.now())
+	snapshot := usage.snapshotLocked()
+	if err := SaveUsageOnly(path, snapshot); err != nil {
+		if hadPrevious {
+			usage.entries[id] = previous
+		} else {
+			delete(usage.entries, id)
+		}
+		usage.mu.Unlock()
+		s.persistMu.Unlock()
+		return UsageResetResult{}, fmt.Errorf("persist usage reset: %w", err)
+	}
+	usage.mu.Unlock()
+	s.persistMu.Unlock()
+	return result, nil
+}
+
 // --- Global alias mapping table management ---
 
 // UpsertAlias adds or replaces an alias in the global table. Validates the
@@ -1292,6 +1362,8 @@ func (s *Store) usageSnapshotLocked() map[string]*UsageState {
 // current key list. Called by the background flusher and at lifecycle points
 // (reconfigure / shutdown).
 func (s *Store) FlushUsage() error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	s.mu.Lock()
 	usage := s.usageSnapshotLocked()
 	path := s.statePath
@@ -1304,19 +1376,13 @@ func (s *Store) FlushUsage() error {
 	// API (UpsertKey/DeleteKey/RotateKey), so the periodic flush must not
 	// overwrite them with an in-memory snapshot that could be stale or
 	// truncated.
-	return s.saveUsageOnly(path, usage)
+	return SaveUsageOnly(path, usage)
 }
 
 func (s *Store) saveState(path string, keys []KeyConfig, usage map[string]*UsageState, aliases []AliasMapping, rules []ClassifyRule) error {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
 	return SaveState(path, keys, usage, aliases, rules)
-}
-
-func (s *Store) saveUsageOnly(path string, usage map[string]*UsageState) error {
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-	return SaveUsageOnly(path, usage)
 }
 
 // StartUsageFlusher launches a goroutine that periodically persists the usage

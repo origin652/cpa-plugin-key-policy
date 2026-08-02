@@ -43,6 +43,15 @@ describe("translate", () => {
     expect(translate("login.memoryNote")).toContain("記憶體");
   });
 
+  it("uses compact labels for the shared reset menu", () => {
+    _resetLocale("zh-CN");
+    expect(translate("keys.reset")).toBe("重置");
+    expect(translate("keys.resetRpm")).toBe("RPM");
+    _resetLocale("en");
+    expect(translate("keys.reset")).toBe("Reset");
+    expect(translate("keys.resetRpm")).toBe("RPM");
+  });
+
   it("falls back to zh-CN base for a key missing in the requested locale", () => {
     // Strip a key from en's bundle to simulate a not-yet-translated entry.
     // Translate key that exists in zh-CN base; we craft a guaranteed-present

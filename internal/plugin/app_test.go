@@ -687,6 +687,74 @@ func TestManagementKeyUsageEndpoint(t *testing.T) {
 	}
 }
 
+func TestManagementResetUsageEndpoint(t *testing.T) {
+	app, _ := configurePricedApp(t)
+	usageReq, _ := json.Marshal(UsageHandleRequest{
+		APIKey: "priced", Alias: "fast", Model: "gpt-5-codex",
+		Detail: UsageDetail{InputTokens: 200_000, OutputTokens: 100_000, TotalTokens: 300_000},
+	})
+	if _, err := app.HandleMethod(MethodUsageHandle, usageReq); err != nil {
+		t.Fatal(err)
+	}
+
+	resetBody, _ := json.Marshal(map[string]string{"id": "priced", "window": "daily"})
+	req, _ := json.Marshal(ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/plugins/cpa-key-policy/keys/reset-usage",
+		Body:   resetBody,
+	})
+	resp := managementResponseFromEnvelope(t, mustHandle(t, app, MethodManagementHandle, req))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("daily reset status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+	var got policy.UsageResetResult
+	if err := json.Unmarshal(resp.Body, &got); err != nil {
+		t.Fatalf("unmarshal reset response: %v, body=%s", err, resp.Body)
+	}
+	if got.KeyID != "priced" || got.Window != policy.UsageResetDaily || !nearly(got.BeforeDailyUSD, 0.30) {
+		t.Fatalf("daily reset response = %+v", got)
+	}
+
+	keys := app.Store().Keys()
+	summary := app.Store().UsageSummaryFor(keys[0])
+	if !nearly(summary.DailyUSD, 0) || !nearly(summary.WeeklyUSD, 0.30) {
+		t.Fatalf("daily reset summary = %+v, want 0/0.30", summary)
+	}
+
+	badBody, _ := json.Marshal(map[string]string{"id": "priced", "window": "month"})
+	badReq, _ := json.Marshal(ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/plugins/cpa-key-policy/keys/reset-usage",
+		Body:   badBody,
+	})
+	badResp := managementResponseFromEnvelope(t, mustHandle(t, app, MethodManagementHandle, badReq))
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid window status = %d, want 400", badResp.StatusCode)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		body       []byte
+		wantStatus int
+	}{
+		{name: "malformed json", body: []byte(`{"id":`), wantStatus: http.StatusBadRequest},
+		{name: "missing id", body: []byte(`{"window":"daily"}`), wantStatus: http.StatusBadRequest},
+		{name: "unknown key", body: []byte(`{"id":"missing","window":"daily"}`), wantStatus: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			boundaryReq, _ := json.Marshal(ManagementRequest{
+				Method: http.MethodPost,
+				Path:   "/v0/management/plugins/cpa-key-policy/keys/reset-usage",
+				Body:   tc.body,
+			})
+			boundaryResp := managementResponseFromEnvelope(t, mustHandle(t, app, MethodManagementHandle, boundaryReq))
+			if boundaryResp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", boundaryResp.StatusCode, tc.wantStatus, boundaryResp.Body)
+			}
+		})
+	}
+}
+
 func mustHandle(t *testing.T, app *App, method string, req []byte) []byte {
 	t.Helper()
 	raw, err := app.HandleMethod(method, req)

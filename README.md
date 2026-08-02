@@ -170,6 +170,7 @@ Exact paths (no path templates). Auth: CPA management bearer token.
 - `GET/POST/PATCH/DELETE …/keys` (`id` in query or body for mutate)
 - `POST …/keys/rotate?id=…`
 - `POST …/keys/reset-rpm?id=…`
+- `POST …/keys/reset-usage` with `{ "id": "…", "window": "daily" | "weekly" }`
 - `GET …/keys/usage?id=…`
 - `GET …/status`
 
@@ -257,4 +258,3 @@ Per-key `allow_models_endpoint`: **binary** — deny (401) or full global list. 
 go test ./...
 cd web && npm test && npm run build
 ```
-

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +36,35 @@ func newClockedStore(t *testing.T, now time.Time) (*Store, time.Time) {
 		t.Fatal(err)
 	}
 	return store, tm
+}
+
+func TestUsageLedgerLoadAndSnapshotDeepCopyAliasMap(t *testing.T) {
+	sourceState := &UsageState{
+		Daily: UsageWindow{TotalUSD: 1},
+		ByAlias: map[string]AliasUsageWindows{
+			"fast": {Daily: UsageWindow{TotalUSD: 1}},
+		},
+	}
+	ledger := newUsageLedger(time.Now)
+	ledger.loadFromState(map[string]*UsageState{"team-a": sourceState})
+
+	// Mutating the state object supplied by the persistence layer must not
+	// change the live ledger.
+	sourceState.Daily.TotalUSD = 9
+	sourceState.ByAlias["fast"] = AliasUsageWindows{Daily: UsageWindow{TotalUSD: 9}}
+	first := ledger.snapshot()["team-a"]
+	if !nearly(first.Daily.TotalUSD, 1) || !nearly(first.ByAlias["fast"].Daily.TotalUSD, 1) {
+		t.Fatalf("loaded ledger shares source state: %+v", first)
+	}
+
+	// A caller mutating a persistence/reporting snapshot must likewise leave
+	// the live ledger untouched.
+	first.Daily.TotalUSD = 7
+	first.ByAlias["fast"] = AliasUsageWindows{Daily: UsageWindow{TotalUSD: 7}}
+	second := ledger.snapshot()["team-a"]
+	if !nearly(second.Daily.TotalUSD, 1) || !nearly(second.ByAlias["fast"].Daily.TotalUSD, 1) {
+		t.Fatalf("ledger shares returned snapshot: %+v", second)
+	}
 }
 
 func hashForUsageTest(t *testing.T, key string) string {
@@ -250,6 +280,133 @@ func TestUsagePersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestResetUsageWindowDailyAndWeekly(t *testing.T) {
+	now := time.Date(2026, 8, 2, 1, 30, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	store := NewStore()
+	store.SetClock(func() time.Time { return now })
+	if err := store.Configure(Config{
+		Enabled:   true,
+		StateFile: statePath,
+		Keys: []KeyConfig{{
+			ID: "resettable", Enabled: true,
+			KeyHash: hashForUsageTest(t, "cpa_resettable"),
+			Models: []ModelRule{{
+				Alias: "fast", Provider: "codex", TargetModel: "gpt-5",
+				InputPricePerMillion: 1, OutputPricePerMillion: 1,
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = store.RecordUsage("resettable", "fast", "gpt-5", false, UsageDetail{
+		InputTokens: 300_000,
+	})
+	dailyResult, err := store.ResetUsageWindow("resettable", UsageResetDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nearly(dailyResult.BeforeDailyUSD, 0.30) || !nearly(dailyResult.BeforeWeeklyUSD, 0.30) {
+		t.Fatalf("daily reset before = %+v, want 0.30/0.30", dailyResult)
+	}
+	summary := store.UsageSummaryFor(store.Keys()[0])
+	if !nearly(summary.DailyUSD, 0) || !nearly(summary.WeeklyUSD, 0.30) {
+		t.Fatalf("after daily reset = %+v, want daily 0 / weekly 0.30", summary)
+	}
+	_, aliases, ok := store.AliasUsageFor("resettable")
+	if !ok || len(aliases) != 1 || !nearly(aliases[0].Daily.TotalUSD, 0) || !nearly(aliases[0].Weekly.TotalUSD, 0.30) {
+		t.Fatalf("alias after daily reset = %+v, want daily 0 / weekly 0.30", aliases)
+	}
+
+	_ = store.RecordUsage("resettable", "fast", "gpt-5", false, UsageDetail{
+		InputTokens: 200_000,
+	})
+	weeklyResult, err := store.ResetUsageWindow("resettable", UsageResetWeekly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nearly(weeklyResult.BeforeDailyUSD, 0.20) || !nearly(weeklyResult.BeforeWeeklyUSD, 0.50) {
+		t.Fatalf("weekly reset before = %+v, want 0.20/0.50", weeklyResult)
+	}
+	summary = store.UsageSummaryFor(store.Keys()[0])
+	if !nearly(summary.DailyUSD, 0) || !nearly(summary.WeeklyUSD, 0) {
+		t.Fatalf("after weekly reset = %+v, want daily 0 / weekly 0", summary)
+	}
+	_, aliases, _ = store.AliasUsageFor("resettable")
+	if len(aliases) != 1 || !nearly(aliases[0].Daily.TotalUSD, 0) || !nearly(aliases[0].Weekly.TotalUSD, 0) {
+		t.Fatalf("alias after weekly reset = %+v, want daily 0 / weekly 0", aliases)
+	}
+
+	reloaded := NewStore()
+	reloaded.SetClock(func() time.Time { return now })
+	if err := reloaded.Configure(Config{Enabled: true, StateFile: statePath}); err != nil {
+		t.Fatal(err)
+	}
+	reloadedSummary := reloaded.UsageSummaryFor(reloaded.Keys()[0])
+	if !nearly(reloadedSummary.DailyUSD, 0) || !nearly(reloadedSummary.WeeklyUSD, 0) {
+		t.Fatalf("persisted reset after reload = %+v, want 0/0", reloadedSummary)
+	}
+}
+
+func TestResetUsageWindowRejectsInvalidInput(t *testing.T) {
+	store, _ := newClockedStore(t, time.Date(2026, 8, 2, 1, 30, 0, 0, time.UTC))
+	if _, err := store.ResetUsageWindow("missing", UsageResetDaily); !errors.Is(err, ErrUnknownKey) {
+		t.Fatalf("unknown key error = %v, want ErrUnknownKey", err)
+	}
+	if _, err := store.ResetUsageWindow("team-a", UsageResetWindow("month")); err == nil {
+		t.Fatal("invalid reset window should fail")
+	}
+}
+
+func TestResetUsageWindowRollsBackWhenPersistenceFails(t *testing.T) {
+	now := time.Date(2026, 8, 2, 1, 30, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	store := NewStore()
+	store.SetClock(func() time.Time { return now })
+	if err := store.Configure(Config{
+		Enabled:   true,
+		StateFile: statePath,
+		Keys: []KeyConfig{{
+			ID: "resettable", Enabled: true,
+			KeyHash: hashForUsageTest(t, "cpa_resettable"),
+			Models: []ModelRule{{
+				Alias: "fast", Provider: "codex", TargetModel: "gpt-5",
+				InputPricePerMillion: 1, OutputPricePerMillion: 1,
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RecordUsage("resettable", "fast", "gpt-5", false, UsageDetail{
+		InputTokens: 300_000,
+	})
+
+	corruptState := []byte(`{"version":`)
+	if err := os.WriteFile(statePath, corruptState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResetUsageWindow("resettable", UsageResetWeekly); err == nil {
+		t.Fatal("reset should fail when the current state file cannot be loaded")
+	}
+
+	summary := store.UsageSummaryFor(store.Keys()[0])
+	if !nearly(summary.DailyUSD, 0.30) || !nearly(summary.WeeklyUSD, 0.30) {
+		t.Fatalf("usage after failed reset = %+v, want in-memory rollback to 0.30/0.30", summary)
+	}
+	_, aliases, ok := store.AliasUsageFor("resettable")
+	if !ok || len(aliases) != 1 || !nearly(aliases[0].Daily.TotalUSD, 0.30) || !nearly(aliases[0].Weekly.TotalUSD, 0.30) {
+		t.Fatalf("alias usage after failed reset = %+v, want rollback to 0.30/0.30", aliases)
+	}
+	persisted, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != string(corruptState) {
+		t.Fatalf("failed reset changed state file: %q", persisted)
+	}
+}
+
 // newCacheStore builds a store with one key whose alias has an explicit
 // cache-read price, for cache-stat accounting tests.
 func newCacheStore(t *testing.T, now time.Time, provider string) *Store {
@@ -282,7 +439,7 @@ func newCacheStore(t *testing.T, now time.Time, provider string) *Store {
 func TestCacheStatsAccumulatedAndHitRate(t *testing.T) {
 	now := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
 	store := newCacheStore(t, now, "openai")
-	cost := store.RecordUsage("cache-key", "fast", "m", false, UsageDetail{
+	cost := store.RecordUsage("cache-key", "FAST", "m", false, UsageDetail{
 		InputTokens: 1_000_000, OutputTokens: 500_000, CachedTokens: 200_000,
 	})
 	if !nearly(cost, 9.96) {
@@ -306,6 +463,10 @@ func TestCacheStatsAccumulatedAndHitRate(t *testing.T) {
 	// Weekly window mirrors daily for a same-day single record.
 	if !nearly(s.WeeklyCacheCostUSD, 0.06) || s.WeeklyCacheReadTokens != 200_000 {
 		t.Fatalf("weekly cache stats = %+v, want 0.06/200000", s)
+	}
+	_, rows, ok := store.AliasUsageFor("cache-key")
+	if !ok || len(rows) != 1 || rows[0].Alias != "fast" {
+		t.Fatalf("cache-aware mixed-case alias rows = %+v, want one canonical fast row", rows)
 	}
 }
 
@@ -440,7 +601,7 @@ func TestPerCallBillsFixedUSD(t *testing.T) {
 
 	// A "successful" usage record with huge token counts — per_call must charge
 	// the fixed $0.50, NOT the (dormant) token price.
-	cost := store.RecordUsage("percall", "fast", "gpt-5-codex", false, UsageDetail{
+	cost := store.RecordUsage("percall", "FAST", "gpt-5-codex", false, UsageDetail{
 		InputTokens: 1_000_000, OutputTokens: 1_000_000,
 	})
 	if !nearly(cost, 0.50) {
@@ -451,7 +612,7 @@ func TestPerCallBillsFixedUSD(t *testing.T) {
 		t.Fatalf("first call should be allowed: %+v", d)
 	}
 	// Second $0.50 → total $1.00 == limit. Next Authenticate rejected.
-	_ = store.RecordUsage("percall", "fast", "gpt-5-codex", false, UsageDetail{})
+	_ = store.RecordUsage("percall", "FaSt", "gpt-5-codex", false, UsageDetail{})
 	d = store.Authenticate("POST", "/v1/chat/completions", hdr, nil, []byte(`{"model":"fast"}`))
 	if d.Allowed || !d.CostLimited || d.Reason != "daily_exceeded" {
 		t.Fatalf("after two per_call charges, next should be daily_exceeded: %+v", d)
@@ -460,6 +621,10 @@ func TestPerCallBillsFixedUSD(t *testing.T) {
 	s := store.UsageSummaryFor(store.Keys()[0])
 	if s.DailyCallCount != 2 {
 		t.Fatalf("daily call count = %d, want 2", s.DailyCallCount)
+	}
+	_, rows, ok := store.AliasUsageFor("percall")
+	if !ok || len(rows) != 1 || rows[0].Alias != "fast" || rows[0].Daily.CallCount != 2 {
+		t.Fatalf("per-call mixed-case alias rows = %+v, want one canonical fast row with 2 calls", rows)
 	}
 }
 
@@ -753,6 +918,300 @@ func TestAliasUsageLegacyStateMigrates(t *testing.T) {
 	}
 	if !nearly(a.Daily.TotalUSD, 0.80) {
 		t.Fatalf("round-trip daily = %v, want 0.80", a.Daily.TotalUSD)
+	}
+}
+
+// TestRecordUsageCanonicalAliasCaseVariants: pure case variants of a configured
+// alias must land in the single config-spelling ByAlias bucket (not three).
+func TestRecordUsageCanonicalAliasCaseVariants(t *testing.T) {
+	now := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	store := NewStore()
+	store.SetClock(func() time.Time { return now })
+	if err := store.Configure(Config{
+		Enabled:   true,
+		StateFile: statePath,
+		Keys: []KeyConfig{{
+			ID: "team-sol", Enabled: true,
+			KeyHash: hashForUsageTest(t, "cpa_sol"),
+			Models: []ModelRule{{
+				Alias: "gpt-5.6-sol", Provider: "codex", TargetModel: "gpt-5.6",
+				InputPricePerMillion: 1, OutputPricePerMillion: 2,
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Three case variants, same token shape each: 100K in / 50K out → $0.10+$0.10=$0.20
+	variants := []string{"gpt-5.6-sol", "Gpt-5.6-sol", "GPT-5.6-SOL"}
+	for _, v := range variants {
+		cost := store.RecordUsage("team-sol", v, "gpt-5.6", false, UsageDetail{
+			InputTokens: 100_000, OutputTokens: 50_000,
+		})
+		if !nearly(cost, 0.20) {
+			t.Fatalf("RecordUsage(%q) cost = %v, want 0.20", v, cost)
+		}
+	}
+
+	_, rows, ok := store.AliasUsageFor("team-sol")
+	if !ok {
+		t.Fatal("key not found")
+	}
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1 canonical bucket; rows=%+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Alias != "gpt-5.6-sol" || !row.InConfig {
+		t.Fatalf("row = %+v, want alias=gpt-5.6-sol in_config=true", row)
+	}
+	if !nearly(row.Daily.TotalUSD, 0.60) || row.Daily.CallCount != 3 {
+		t.Fatalf("daily = %+v, want $0.60 / 3 calls", row.Daily)
+	}
+	if row.Daily.InputTokens != 300_000 || row.Daily.OutputTokens != 150_000 {
+		t.Fatalf("daily tokens = %+v, want 300000/150000", row.Daily)
+	}
+	// Key-level totals must match (no double-count at key vs alias).
+	s := store.UsageSummaryFor(store.Keys()[0])
+	if !nearly(s.DailyUSD, 0.60) || s.DailyCallCount != 3 {
+		t.Fatalf("key daily = %+v, want $0.60 / 3", s)
+	}
+
+	// Unknown alias: zero cost, no forged empty ByAlias row.
+	unknownCost := store.RecordUsage("team-sol", "totally-unknown-model", "x", false, UsageDetail{
+		InputTokens: 1_000_000, OutputTokens: 0,
+	})
+	if unknownCost != 0 {
+		t.Fatalf("unknown alias cost = %v, want 0", unknownCost)
+	}
+	_, rows2, _ := store.AliasUsageFor("team-sol")
+	if len(rows2) != 1 {
+		t.Fatalf("unknown alias created extra rows: %+v", rows2)
+	}
+	if rows2[0].Alias != "gpt-5.6-sol" {
+		t.Fatalf("unexpected residual after unknown: %+v", rows2)
+	}
+}
+
+// TestRecordResponseCostCanonicalAliasCaseVariants: non-stream response-cost
+// path also writes only the configured canonical spelling.
+func TestRecordResponseCostCanonicalAliasCaseVariants(t *testing.T) {
+	now := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
+	store := NewStore()
+	store.SetClock(func() time.Time { return now })
+	if err := store.Configure(Config{
+		Enabled:   true,
+		StateFile: filepath.Join(t.TempDir(), "state.json"),
+		Keys: []KeyConfig{{
+			ID: "team-sol", Enabled: true,
+			KeyHash: hashForUsageTest(t, "cpa_sol"),
+			Models: []ModelRule{{
+				Alias: "gpt-5.6-sol", Provider: "codex", TargetModel: "gpt-5.6",
+				InputPricePerMillion: 1, OutputPricePerMillion: 1,
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hdr := map[string][]string{"Authorization": {"Bearer cpa_sol"}}
+	body := []byte(`{"usage":{"prompt_tokens":500000,"completion_tokens":0}}`)
+
+	for _, v := range []string{"gpt-5.6-sol", "GPT-5.6-SOL", "Gpt-5.6-Sol"} {
+		cost := store.RecordResponseCost(hdr, nil, v, body)
+		if !nearly(cost, 0.50) {
+			t.Fatalf("RecordResponseCost(%q) = %v, want 0.50", v, cost)
+		}
+	}
+	_, rows, ok := store.AliasUsageFor("team-sol")
+	if !ok {
+		t.Fatal("key not found")
+	}
+	if len(rows) != 1 || rows[0].Alias != "gpt-5.6-sol" || !rows[0].InConfig {
+		t.Fatalf("rows = %+v, want single canonical gpt-5.6-sol", rows)
+	}
+	if !nearly(rows[0].Daily.TotalUSD, 1.50) || rows[0].Daily.CallCount != 3 {
+		t.Fatalf("daily = %+v, want $1.50 / 3", rows[0].Daily)
+	}
+
+	// Unknown alias on response path: zero, no empty row.
+	if c := store.RecordResponseCost(hdr, nil, "no-such-alias", body); c != 0 {
+		t.Fatalf("unknown response cost = %v, want 0", c)
+	}
+	_, rows2, _ := store.AliasUsageFor("team-sol")
+	if len(rows2) != 1 || rows2[0].Alias != "gpt-5.6-sol" {
+		t.Fatalf("unknown created rows: %+v", rows2)
+	}
+}
+
+// TestAliasUsageCaseCanonicalReadOnlyMerge: historical mixed-case ByAlias
+// buckets merge on read into the config spelling; state file bytes and ledger
+// entries are not mutated by the read.
+func TestAliasUsageCaseCanonicalReadOnlyMerge(t *testing.T) {
+	now := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	// Seed state with legacy mixed-case ByAlias keys (simulates pre-fix history).
+	// Daily: "gpt-5.6-sol" $0.20 + "Gpt-5.6-sol" $0.30 + "GPT-5.6-SOL" $0.10 = $0.60
+	seed := map[string]any{
+		"version": 1,
+		"keys": []map[string]any{{
+			"id": "team-sol", "enabled": true,
+			"key_hash": hashForUsageTest(t, "cpa_sol"),
+			"models": []map[string]any{{
+				"alias": "gpt-5.6-sol", "provider": "codex", "target_model": "gpt-5.6",
+				"input_price_per_million": 1, "output_price_per_million": 2,
+			}},
+		}},
+		"usage": map[string]any{
+			"team-sol": map[string]any{
+				"daily":  map[string]any{"total_usd": 0.60, "call_count": 3, "window_start": now.Format(time.RFC3339)},
+				"weekly": map[string]any{"total_usd": 0.60, "call_count": 3, "window_start": now.Format(time.RFC3339)},
+				"by_alias": map[string]any{
+					"gpt-5.6-sol": map[string]any{
+						"daily":  map[string]any{"total_usd": 0.20, "call_count": 1, "cache_read_tokens": 10000, "cache_cost_usd": 0.01, "input_tokens": 100000, "output_tokens": 50000, "window_start": now.Format(time.RFC3339)},
+						"weekly": map[string]any{"total_usd": 0.20, "call_count": 1, "cache_read_tokens": 10000, "cache_cost_usd": 0.01, "input_tokens": 100000, "output_tokens": 50000, "window_start": now.Format(time.RFC3339)},
+					},
+					"Gpt-5.6-sol": map[string]any{
+						"daily":  map[string]any{"total_usd": 0.30, "call_count": 1, "cache_read_tokens": 20000, "cache_cost_usd": 0.02, "input_tokens": 150000, "output_tokens": 75000, "window_start": now.Format(time.RFC3339)},
+						"weekly": map[string]any{"total_usd": 0.30, "call_count": 1, "cache_read_tokens": 20000, "cache_cost_usd": 0.02, "input_tokens": 150000, "output_tokens": 75000, "window_start": now.Format(time.RFC3339)},
+					},
+					"GPT-5.6-SOL": map[string]any{
+						"daily":  map[string]any{"total_usd": 0.10, "call_count": 1, "cache_read_tokens": 30000, "cache_cost_usd": 0.03, "input_tokens": 50000, "output_tokens": 25000, "window_start": now.Format(time.RFC3339)},
+						"weekly": map[string]any{"total_usd": 0.10, "call_count": 1, "cache_read_tokens": 30000, "cache_cost_usd": 0.03, "input_tokens": 50000, "output_tokens": 25000, "window_start": now.Format(time.RFC3339)},
+					},
+					// Truly removed residual — different name, must stay separate.
+					"old-model": map[string]any{
+						"daily":  map[string]any{"total_usd": 0.05, "call_count": 1, "input_tokens": 50000, "window_start": now.Format(time.RFC3339)},
+						"weekly": map[string]any{"total_usd": 0.05, "call_count": 1, "input_tokens": 50000, "window_start": now.Format(time.RFC3339)},
+					},
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore()
+	store.SetClock(func() time.Time { return now })
+	if err := store.Configure(Config{
+		Enabled:   true,
+		StateFile: statePath,
+		Keys: []KeyConfig{{
+			ID: "team-sol", Enabled: true,
+			KeyHash: hashForUsageTest(t, "cpa_sol"),
+			Models: []ModelRule{{
+				Alias: "gpt-5.6-sol", Provider: "codex", TargetModel: "gpt-5.6",
+				InputPricePerMillion: 1, OutputPricePerMillion: 2,
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot the complete ledger before read (must be unchanged after).
+	_, usageBefore := store.runtimeComponents()
+	var beforeLedgerBytes []byte
+	if usageBefore != nil {
+		beforeLedgerBytes, err = json.Marshal(usageBefore.snapshot())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, rows, ok := store.AliasUsageFor("team-sol")
+	if !ok {
+		t.Fatal("key not found")
+	}
+	byAlias := map[string]AliasUsageEntry{}
+	for _, r := range rows {
+		byAlias[r.Alias] = r
+	}
+	// Configured canonical + residual old-model only (3 case variants merged).
+	if len(rows) != 2 {
+		t.Fatalf("row count = %d, want 2; rows=%+v", len(rows), rows)
+	}
+	canon := byAlias["gpt-5.6-sol"]
+	if !canon.InConfig {
+		t.Fatalf("canonical must be in_config=true: %+v", canon)
+	}
+	if !nearly(canon.Daily.TotalUSD, 0.60) || canon.Daily.CallCount != 3 {
+		t.Fatalf("canonical daily = %+v, want $0.60 / 3", canon.Daily)
+	}
+	if canon.Daily.InputTokens != 300_000 || canon.Daily.OutputTokens != 150_000 {
+		t.Fatalf("canonical tokens = %+v, want 300000/150000", canon.Daily)
+	}
+	if canon.Daily.CacheReadTokens != 60_000 || !nearly(canon.Daily.CacheCostUSD, 0.06) {
+		t.Fatalf("canonical cache counters = %+v, want 60000/$0.06", canon.Daily)
+	}
+	if !nearly(canon.Weekly.TotalUSD, 0.60) || canon.Weekly.CallCount != 3 {
+		t.Fatalf("canonical weekly = %+v, want $0.60 / 3", canon.Weekly)
+	}
+	if canon.Weekly.CacheReadTokens != 60_000 || !nearly(canon.Weekly.CacheCostUSD, 0.06) {
+		t.Fatalf("canonical weekly cache counters = %+v, want 60000/$0.06", canon.Weekly)
+	}
+	residual := byAlias["old-model"]
+	if residual.InConfig || !nearly(residual.Daily.TotalUSD, 0.05) {
+		t.Fatalf("residual = %+v, want in_config=false $0.05", residual)
+	}
+
+	// Key-level limits unchanged (read does not re-sum key totals from aliases).
+	s := store.UsageSummaryFor(store.Keys()[0])
+	if !nearly(s.DailyUSD, 0.60) || s.DailyCallCount != 3 {
+		t.Fatalf("key summary daily = %+v, want $0.60 / 3 (unchanged)", s)
+	}
+
+	// The complete ledger still holds all historical spellings and values.
+	_, usageAfter := store.runtimeComponents()
+	var afterLedgerBytes []byte
+	if usageAfter != nil {
+		afterLedgerBytes, err = json.Marshal(usageAfter.snapshot())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(beforeLedgerBytes) != string(afterLedgerBytes) {
+		t.Fatal("ledger snapshot changed by AliasUsage read")
+	}
+	// State file bytes untouched by the read (no flush/save side effect).
+	afterBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforeBytes) != string(afterBytes) {
+		t.Fatal("state file bytes changed by AliasUsage read")
+	}
+}
+
+func TestAddUsageWindowUsesEarliestNonZeroStart(t *testing.T) {
+	earlier := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	later := earlier.Add(24 * time.Hour)
+
+	merged := addUsageWindow(
+		UsageWindow{TotalUSD: 0.20, WindowStart: later},
+		UsageWindow{TotalUSD: 0.30, WindowStart: earlier},
+	)
+	if !merged.WindowStart.Equal(earlier) {
+		t.Fatalf("merged window start = %s, want earliest %s", merged.WindowStart, earlier)
+	}
+	if !nearly(merged.TotalUSD, 0.50) {
+		t.Fatalf("merged total = %v, want 0.50", merged.TotalUSD)
+	}
+
+	reversed := addUsageWindow(
+		UsageWindow{TotalUSD: 0.30, WindowStart: earlier},
+		UsageWindow{TotalUSD: 0.20, WindowStart: later},
+	)
+	if !reversed.WindowStart.Equal(earlier) || !nearly(reversed.TotalUSD, 0.50) {
+		t.Fatalf("reverse-order merge = %+v, want earliest start and total 0.50", reversed)
 	}
 }
 

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,6 +12,31 @@ const (
 	weekWindow         = 7 * 24 * time.Hour
 	usageFlushInterval = 15 * time.Second
 )
+
+// UsageResetWindow identifies a usage accounting window that an administrator
+// can clear for one key.
+type UsageResetWindow string
+
+const (
+	// UsageResetDaily clears the current UTC calendar-day usage window.
+	UsageResetDaily UsageResetWindow = "daily"
+	// UsageResetWeekly clears the rolling weekly window and also clears the
+	// current daily window.
+	UsageResetWeekly UsageResetWindow = "weekly"
+)
+
+// UsageResetResult describes a completed usage reset and the next reset times
+// of the resulting windows.
+type UsageResetResult struct {
+	KeyID           string           `json:"id"`
+	Window          UsageResetWindow `json:"window"`
+	BeforeDailyUSD  float64          `json:"before_daily_usd"`
+	BeforeWeeklyUSD float64          `json:"before_weekly_usd"`
+	AfterDailyUSD   float64          `json:"after_daily_usd"`
+	AfterWeeklyUSD  float64          `json:"after_weekly_usd"`
+	DailyResetAt    time.Time        `json:"daily_reset_at"`
+	WeeklyResetAt   time.Time        `json:"weekly_reset_at"`
+}
 
 // usageLedger tracks per-key dollar usage with a daily window (UTC midnight
 // reset) and a rolling 7-day weekly window. Usage is also broken down per alias.
@@ -41,8 +67,7 @@ func (l *usageLedger) loadFromState(usage map[string]*UsageState) {
 		if st == nil {
 			continue
 		}
-		cp := *st
-		l.entries[id] = &cp
+		l.entries[id] = cloneUsageState(st)
 	}
 }
 
@@ -50,15 +75,30 @@ func (l *usageLedger) loadFromState(usage map[string]*UsageState) {
 func (l *usageLedger) snapshot() map[string]*UsageState {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.snapshotLocked()
+}
+
+func (l *usageLedger) snapshotLocked() map[string]*UsageState {
 	out := make(map[string]*UsageState, len(l.entries))
 	for id, st := range l.entries {
 		if st == nil {
 			continue
 		}
-		cp := *st
-		out[id] = &cp
+		out[id] = cloneUsageState(st)
 	}
 	return out
+}
+
+func cloneUsageState(st *UsageState) *UsageState {
+	if st == nil {
+		return nil
+	}
+	cp := *st
+	cp.ByAlias = make(map[string]AliasUsageWindows, len(st.ByAlias))
+	for alias, windows := range st.ByAlias {
+		cp.ByAlias[alias] = windows
+	}
+	return &cp
 }
 
 func (l *usageLedger) entryLocked(id string) *UsageState {
@@ -264,6 +304,41 @@ func (l *usageLedger) resetUsage(id string) {
 	delete(l.entries, id)
 }
 
+// resetWindowLocked clears quota counters at one administrative boundary.
+// A weekly reset starts a new seven-day window and also clears the current
+// daily window; a daily reset leaves the rolling weekly window intact.
+func (l *usageLedger) resetWindowLocked(id string, window UsageResetWindow, now time.Time) UsageResetResult {
+	now = now.UTC()
+	st := l.entryLocked(id)
+	l.ensureDailyWindowLocked(st, now)
+	l.ensureWeeklyWindowLocked(st, now)
+	result := UsageResetResult{
+		KeyID:           id,
+		Window:          window,
+		BeforeDailyUSD:  st.Daily.TotalUSD,
+		BeforeWeeklyUSD: st.Weekly.TotalUSD,
+		DailyResetAt:    now.Truncate(dayWindow).Add(dayWindow),
+	}
+
+	dailyStart := now.Truncate(dayWindow)
+	st.Daily = UsageWindow{WindowStart: dailyStart}
+	if window == UsageResetWeekly {
+		st.Weekly = UsageWindow{WindowStart: now}
+	}
+	for alias, windows := range st.ByAlias {
+		windows.Daily = UsageWindow{WindowStart: dailyStart}
+		if window == UsageResetWeekly {
+			windows.Weekly = UsageWindow{WindowStart: now}
+		}
+		st.ByAlias[alias] = windows
+	}
+
+	result.AfterDailyUSD = st.Daily.TotalUSD
+	result.AfterWeeklyUSD = st.Weekly.TotalUSD
+	result.WeeklyResetAt = st.Weekly.WindowStart.Add(weekWindow)
+	return result
+}
+
 // AliasUsageEntry is one row of the per-alias usage breakdown reported by the
 // key detail API. Configured aliases appear with InConfig=true (zero values
 // when unused); aliases with historical usage that are no longer in the key's
@@ -283,6 +358,10 @@ type AliasUsageEntry struct {
 // AliasUsage returns a per-alias usage breakdown for a key: configured aliases
 // (zero values when unused) merged with ledger residuals (aliases that have
 // historical usage but are no longer in the key's config, InConfig=false).
+// Pure case variants of a configured alias are merged into the config's
+// canonical spelling (InConfig=true) so historical mixed-case buckets display
+// as one row. Truly removed aliases remain residual rows (InConfig=false) and
+// are not case-merged across unrelated names.
 // Windows are re-evaluated on read so an aged-out weekly total resets for
 // display (the read does not mutate the ledger; the next write commits the
 // reset, mirroring Summary). Rows are sorted by alias for stable display.
@@ -292,6 +371,8 @@ func (l *usageLedger) AliasUsage(key KeyConfig) []AliasUsageEntry {
 	defer l.mu.Unlock()
 
 	byAlias := make(map[string]AliasUsageEntry, len(key.Models))
+	// lower(alias) → configured canonical spelling for case-insensitive merge.
+	canonicalByLower := make(map[string]string, len(key.Models))
 	for _, rule := range key.Models {
 		byAlias[rule.Alias] = AliasUsageEntry{
 			Alias:       rule.Alias,
@@ -301,6 +382,7 @@ func (l *usageLedger) AliasUsage(key KeyConfig) []AliasUsageEntry {
 			PerCallUSD:  rule.PerCallUSD,
 			InConfig:    true,
 		}
+		canonicalByLower[strings.ToLower(rule.Alias)] = rule.Alias
 	}
 
 	if st := l.entries[key.ID]; st != nil {
@@ -309,13 +391,19 @@ func (l *usageLedger) AliasUsage(key KeyConfig) []AliasUsageEntry {
 			// for display without mutating the ledger.
 			l.ensureAliasWindowLocked(&w.Daily, true, now)
 			l.ensureAliasWindowLocked(&w.Weekly, false, now)
-			entry, ok := byAlias[alias]
-			if !ok {
-				entry = AliasUsageEntry{Alias: alias, InConfig: false}
+
+			displayAlias := alias
+			if canonical, ok := canonicalByLower[strings.ToLower(alias)]; ok {
+				displayAlias = canonical
 			}
-			entry.Daily = w.Daily
-			entry.Weekly = w.Weekly
-			byAlias[alias] = entry
+			entry, ok := byAlias[displayAlias]
+			if !ok {
+				entry = AliasUsageEntry{Alias: displayAlias, InConfig: false}
+			}
+			// Accumulate so multiple historical case spellings sum into one row.
+			entry.Daily = addUsageWindow(entry.Daily, w.Daily)
+			entry.Weekly = addUsageWindow(entry.Weekly, w.Weekly)
+			byAlias[displayAlias] = entry
 		}
 	}
 
@@ -325,4 +413,20 @@ func (l *usageLedger) AliasUsage(key KeyConfig) []AliasUsageEntry {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alias < out[j].Alias })
 	return out
+}
+
+// addUsageWindow sums two re-evaluated usage windows for read-side merge.
+// The earliest non-zero start is deterministic across map iteration order and
+// represents the oldest contribution still included in the merged total.
+func addUsageWindow(dst, src UsageWindow) UsageWindow {
+	dst.TotalUSD += src.TotalUSD
+	dst.CallCount += src.CallCount
+	dst.CacheReadTokens += src.CacheReadTokens
+	dst.CacheCostUSD += src.CacheCostUSD
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	if !src.WindowStart.IsZero() && (dst.WindowStart.IsZero() || src.WindowStart.Before(dst.WindowStart)) {
+		dst.WindowStart = src.WindowStart
+	}
+	return dst
 }

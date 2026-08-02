@@ -610,16 +610,40 @@ td.strong { font-weight: 600; color: var(--text); }
     margin-top: 12px; padding-top: 12px;
     border-top: 1px solid var(--border);
     max-height: 0; overflow: hidden; opacity: 0;
+    pointer-events: none;
     margin-top: 0; padding-top: 0; border-top-width: 0;
     transition: max-height var(--t-fast), opacity var(--t-fast), margin-top var(--t-fast), padding-top var(--t-fast), border-top-width var(--t-fast);
   }
   .keycard:hover .kc-actions,
-  .keycard:focus-within .kc-actions {
-    max-height: 80px; opacity: 1;
+  .keycard:focus-within .kc-actions,
+  .keycard.reset-open .kc-actions {
+    max-height: 80px; opacity: 1; pointer-events: auto;
     margin-top: 12px; padding-top: 12px; border-top-width: 1px;
   }
-  .keycard.disabled .kc-actions { max-height: 0 !important; opacity: 0 !important; overflow: hidden; }
+  .keycard.disabled .kc-actions { max-height: 0 !important; opacity: 0 !important; overflow: hidden; pointer-events: none; }
   .keycard .kc-actions .btn { flex: 0 0 auto; }
+  .keycard.reset-open { overflow: visible; z-index: 10; }
+  .keycard.reset-open .kc-actions { overflow: visible; }
+}
+
+.reset-menu { position: relative; }
+.reset-menu > summary { list-style: none; }
+.reset-menu > summary::-webkit-details-marker { display: none; }
+.reset-menu-options {
+  position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 20;
+  min-width: 112px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+}
+.reset-menu-options button {
+  display: block; width: 100%; padding: 8px 10px;
+  border: 0; border-radius: var(--r-sm); background: transparent;
+  color: var(--text); cursor: pointer; font: inherit; font-size: 13px;
+  text-align: left; white-space: nowrap;
+}
+.reset-menu-options button:hover,
+.reset-menu-options button:focus-visible {
+  background: var(--muted-bg); outline: none;
 }
 
 /* .usage-hero: the big-number card at the top of the mobile usage page. */
@@ -671,7 +695,15 @@ td.strong { font-weight: 600; color: var(--text); }
   font-size: 13px; font-weight: 600; color: var(--muted); font-family: inherit;
   transition: all var(--t-fast);
 }
-.seg .seg-btn.active { background: var(--accent); color: var(--on-accent); }
+.seg .seg-btn.active {
+  background: var(--accent); color: var(--on-accent);
+}
+.keyusage-header .seg .seg-btn.active,
+.keyusage-header .seg .seg-btn[aria-selected="true"] {
+  background: var(--accent); color: var(--on-accent); font-weight: 700;
+  box-shadow: 0 0 0 2px var(--accent-ring), var(--shadow-sm);
+}
+.keyusage-header .seg .seg-btn[aria-selected="false"]:hover { background: var(--panel-2); color: var(--text); }
 
 /* .bar-rank: horizontal bar ranking (replaces the alias table on mobile). */
 .bar-rank { display: flex; flex-direction: column; gap: 12px; }

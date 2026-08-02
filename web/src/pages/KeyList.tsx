@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { listKeys, deleteKey, rotateKey, resetRPM } from "../api/keys";
+import { listKeys, deleteKey, rotateKey } from "../api/keys";
 import type { KeyPublic } from "../types";
+import KeyResetMenu from "../components/KeyResetMenu";
 import PlainKeyModal from "../components/PlainKeyModal";
 import { useT } from "../i18n";
 
@@ -50,15 +51,6 @@ export default function KeyList() {
     }
   };
 
-  const onReset = async (id: string) => {
-    try {
-      await resetRPM(id);
-      void load();
-    } catch (e) {
-      alert((e as Error).message ?? t("keys.resetFailed"));
-    }
-  };
-
   const onDelete = async (id: string) => {
     if (!confirm(t("keys.deleteConfirm", { id }))) return;
     try {
@@ -92,7 +84,7 @@ export default function KeyList() {
               k={k}
               onDelete={onDelete}
               onRotate={onRotate}
-              onReset={onReset}
+              onResetComplete={load}
             />
           ))}
         </div>
@@ -121,18 +113,19 @@ function KeyCard({
   k,
   onDelete,
   onRotate,
-  onReset,
+  onResetComplete,
 }: {
   k: KeyPublic;
   onDelete: (id: string) => void;
   onRotate?: (id: string) => void;
-  onReset?: (id: string) => void;
+  onResetComplete: () => void | Promise<void>;
 }) {
   const t = useT();
   const nav = useNavigate();
   const ref = useRef<HTMLDivElement>(null);
   const [dx, setDx] = useState(0);          // current swipe translate
   const [revoking, setRevoking] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const startX = useRef(0); const startY = useRef(0); const dragging = useRef(false); const horizontal = useRef(false); const moved = useRef(false);
 
   const limit = k.usage.daily_limit_usd > 0 ? k.usage.daily_limit_usd : 0;
@@ -196,7 +189,7 @@ function KeyCard({
   return (
     <div
       ref={ref}
-      className={"keycard" + (k.enabled ? "" : " disabled") + (over ? " over" : "")}
+      className={"keycard" + (k.enabled ? "" : " disabled") + (over ? " over" : "") + (resetOpen ? " reset-open" : "")}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -248,7 +241,7 @@ function KeyCard({
         <Link to={`/keys/${encodeURIComponent(k.id)}/edit`}>
           <button className="btn sm" onClick={(e) => e.stopPropagation()}>{t("keys.edit")}</button>
         </Link>
-        {onReset && <button className="btn sm" onClick={(e) => { e.stopPropagation(); onReset(k.id); }}>{t("keys.resetRpm")}</button>}
+        <KeyResetMenu keyId={k.id} onResetComplete={onResetComplete} onOpenChange={setResetOpen} />
         {onRotate && <button className="btn sm" onClick={(e) => { e.stopPropagation(); onRotate(k.id); }}>{t("keys.rotate")}</button>}
         <button className="btn sm danger" onClick={(e) => { e.stopPropagation(); onDelete(k.id); }}>{t("keys.delete")}</button>
       </div>

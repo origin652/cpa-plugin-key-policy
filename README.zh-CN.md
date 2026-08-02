@@ -162,6 +162,7 @@ VITE_CPA_BASE=http://127.0.0.1:8317 npm run dev
 路径为精确匹配。鉴权：CPA 管理 Bearer。
 
 **Key：** `GET/POST/PATCH/DELETE …/keys`，以及 `rotate` / `reset-rpm` / `usage` / `status`  
+**额度重置：** `POST …/keys/reset-usage`，请求体为 `{ "id": "…", "window": "daily" | "weekly" }`
 
 **别名：** `GET/POST/DELETE …/aliases`  
 
@@ -244,4 +245,3 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/aliases" \
 go test ./...
 cd web && npm test && npm run build
 ```
-
