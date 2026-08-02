@@ -86,6 +86,9 @@ export default function KeyEdit() {
         {key.id}<span className="fp-name">{key.name}</span>
       </div>
       <MobileFormHeader title={title} backTo="/keys" />
+      <div className="mobile-only mobile-key-reset">
+        <KeyResetMenu keyId={key.id} />
+      </div>
       <KeyForm
         initial={initial}
         idReadOnly

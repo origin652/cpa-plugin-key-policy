@@ -68,7 +68,7 @@ describe("KeyEdit reset menu", () => {
     vi.clearAllMocks();
   });
 
-  it("uses the same daily, weekly, and RPM reset menu as the key list", async () => {
+  it("exposes the same daily, weekly, and RPM reset menu on desktop and mobile", async () => {
     await act(async () => {
       root = createRoot(container);
       root.render(
@@ -81,10 +81,13 @@ describe("KeyEdit reset menu", () => {
       await tick();
     });
 
-    const details = container.querySelector<HTMLDetailsElement>(".reset-menu");
-    expect(details).not.toBeNull();
-    expect(details?.querySelector("summary")?.textContent).toContain("keys.reset");
-    const buttons = Array.from(details?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+    const desktopDetails = container.querySelector<HTMLDetailsElement>(".fp-head .reset-menu");
+    expect(desktopDetails).not.toBeNull();
+
+    const mobileDetails = container.querySelector<HTMLDetailsElement>(".mobile-key-reset .reset-menu");
+    expect(mobileDetails).not.toBeNull();
+    expect(mobileDetails?.querySelector("summary")?.textContent).toContain("keys.reset");
+    const buttons = Array.from(mobileDetails?.querySelectorAll<HTMLButtonElement>("button") ?? []);
     expect(buttons.map((button) => button.textContent)).toEqual([
       "keys.resetDaily",
       "keys.resetWeekly",

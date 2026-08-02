@@ -421,6 +421,13 @@ td.strong { font-weight: 600; color: var(--text); }
     line-height: 1.25; flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .mobile-key-reset {
+    display: flex !important; justify-content: flex-end;
+    position: relative; z-index: 20; margin-bottom: 14px;
+  }
+  .mobile-key-reset .reset-menu-options {
+    top: calc(100% + 6px); right: 0; bottom: auto; left: auto;
+  }
   .form-page form.card { margin-top: 0; }
   .key-form.card { background: transparent; border: none; box-shadow: none; padding: 0; }
   .kf-section { margin-bottom: 20px; }
