@@ -49,6 +49,8 @@ func (a *App) handleMethod(method string, request []byte) ([]byte, error) {
 		return a.authenticate(request)
 	case MethodModelRoute:
 		return a.routeModel(request)
+	case MethodModelCatalogFilter:
+		return a.filterModelCatalog(request)
 	case MethodSchedulerPick:
 		return a.pickScheduler(request)
 	case MethodResponseInterceptAfter:
@@ -119,6 +121,7 @@ func (a *App) registration() Registration {
 		FrontendAuthProvider:          true,
 		FrontendAuthProviderExclusive: a.nativeMode,
 		ModelRouter:                   true,
+		ModelCatalogFilter:            a.nativeMode,
 		Scheduler:                     !a.nativeMode,
 		ResponseInterceptor:           !a.nativeMode,
 		UsagePlugin:                   true,
@@ -142,6 +145,19 @@ func (a *App) registration() Registration {
 		},
 		Capabilities: capabilities,
 	}
+}
+
+func (a *App) filterModelCatalog(raw []byte) ([]byte, error) {
+	if !a.nativeMode {
+		return OKEnvelope(ModelCatalogFilterResponse{Handled: false})
+	}
+	var req ModelCatalogFilterRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	rawKey := policy.ExtractAPIKey(req.Headers, req.Query)
+	models, handled := a.native.FilterModels(rawKey, req.Models)
+	return OKEnvelope(ModelCatalogFilterResponse{Handled: handled, Models: models})
 }
 
 func (a *App) authenticate(raw []byte) ([]byte, error) {
