@@ -141,6 +141,7 @@ type ModelCatalogFilterRequest struct {
 	Query          url.Values          `json:"Query"`
 	AccessMetadata map[string]string   `json:"AccessMetadata"`
 	Models         []map[string]any    `json:"Models"`
+	ModelProviders map[string][]string `json:"ModelProviders"`
 }
 
 type ModelCatalogFilterResponse struct {

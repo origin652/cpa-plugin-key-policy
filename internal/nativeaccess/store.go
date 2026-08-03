@@ -494,7 +494,7 @@ func (s *Store) RouteProvider(rawKey, model string) (string, bool) {
 // FilterModels returns only model entries matched by at least one grant for
 // the active native key. Provider constraints are enforced at routing time;
 // the OpenAI model catalog itself is keyed by model ID.
-func (s *Store) FilterModels(rawKey string, models []map[string]any) ([]map[string]any, bool) {
+func (s *Store) FilterModels(rawKey string, models []map[string]any, modelProviders map[string][]string) ([]map[string]any, bool) {
 	if err := s.refreshKeys(); err != nil {
 		return nil, false
 	}
@@ -513,7 +513,7 @@ func (s *Store) FilterModels(rawKey string, models []map[string]any) ([]map[stri
 		id, _ := model["id"].(string)
 		allowed := false
 		for _, grant := range policy.Grants {
-			if grantScore(grant, id) >= 0 {
+			if grantScore(grant, id) >= 0 && providerMatches(grant.Provider, modelProviders[id]) {
 				allowed = true
 				break
 			}
@@ -523,6 +523,18 @@ func (s *Store) FilterModels(rawKey string, models []map[string]any) ([]map[stri
 		}
 	}
 	return filtered, true
+}
+
+func providerMatches(pattern string, providers []string) bool {
+	if strings.TrimSpace(pattern) == "*" {
+		return true
+	}
+	for _, provider := range providers {
+		if wildcardMatch(pattern, provider) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) RecordUsage(rawKey string, tokens int64) {

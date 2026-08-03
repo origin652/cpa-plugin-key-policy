@@ -156,7 +156,7 @@ func (a *App) filterModelCatalog(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	rawKey := policy.ExtractAPIKey(req.Headers, req.Query)
-	models, handled := a.native.FilterModels(rawKey, req.Models)
+	models, handled := a.native.FilterModels(rawKey, req.Models, req.ModelProviders)
 	return OKEnvelope(ModelCatalogFilterResponse{Handled: handled, Models: models})
 }
 

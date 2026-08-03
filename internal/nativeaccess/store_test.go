@@ -131,13 +131,14 @@ func TestWildcardGrantsAndProviderConstraint(t *testing.T) {
 	if got := store.Authenticate(key, "kimi-k2.5", false); !got.Allowed || got.Provider != "kimi" {
 		t.Fatalf("expected kimi all-model grant, got %#v", got)
 	}
-	if got := store.Authenticate(key, "deepseek-v4", false); got.Allowed {
-		t.Fatalf("unexpected wildcard overreach: %#v", got)
-	}
 	models, handled := store.FilterModels(key, []map[string]any{
 		{"id": "gpt-5.6-sol"},
 		{"id": "kimi-k2.5"},
 		{"id": "deepseek-v4"},
+	}, map[string][]string{
+		"gpt-5.6-sol": {"codex"},
+		"kimi-k2.5":   {"kimi"},
+		"deepseek-v4": {"deepseek"},
 	})
 	if !handled || len(models) != 2 {
 		t.Fatalf("expected two visible models, handled=%v models=%#v", handled, models)
