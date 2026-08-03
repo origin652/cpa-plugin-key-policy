@@ -24,13 +24,22 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 	if err := store.Upsert(nativeaccess.Policy{
 		KeyHash: nativeaccess.HashKey(key),
 		Enabled: true,
-		Grants: []nativeaccess.Grant{{
-			Provider:         "codex",
-			Model:            "gpt-5.6-*",
-			Group:            "classify:csil",
-			UpstreamPrefix:   "codex-csil",
-			AcceptedPrefixes: []string{"codex-csil-"},
-		}},
+		Grants: []nativeaccess.Grant{
+			{
+				Provider:         "codex",
+				Model:            "gpt-5.6-*",
+				Group:            "classify:csil",
+				UpstreamPrefix:   "codex-csil",
+				AcceptedPrefixes: []string{"codex-csil-"},
+			},
+			{
+				Provider:         "codex",
+				Model:            "gpt-5.3-codex-spark",
+				Group:            "classify:csil",
+				UpstreamPrefix:   "codex-csil",
+				AcceptedPrefixes: []string{"codex-csil-"},
+			},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +63,14 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, requested := range []string{"gpt-5.6-sol", "codex-csil-gpt-5.6-sol"} {
+	requests := map[string]string{
+		"gpt-5.6-sol":                    "codex-csil/gpt-5.6-sol",
+		"codex-csil-gpt-5.6-sol":         "codex-csil/gpt-5.6-sol",
+		"codex-csil-gpt-5.6-terra":       "codex-csil/gpt-5.6-terra",
+		"codex-csil-gpt-5.6-luna":        "codex-csil/gpt-5.6-luna",
+		"codex-csil-gpt-5.3-codex-spark": "codex-csil/gpt-5.3-codex-spark",
+	}
+	for requested, expectedTarget := range requests {
 		body := []byte(`{"model":"` + requested + `"}`)
 		authRequest, _ := json.Marshal(FrontendAuthRequest{
 			Method:  "POST",
@@ -87,7 +103,7 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 		if err := unmarshalOK(rawRoute, &route); err != nil {
 			t.Fatal(err)
 		}
-		if !route.Handled || route.Target != "codex" || route.TargetModel != "codex-csil/gpt-5.6-sol" {
+		if !route.Handled || route.Target != "codex" || route.TargetModel != expectedTarget {
 			t.Fatalf("unexpected route for %q: %#v", requested, route)
 		}
 	}
