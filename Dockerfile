@@ -15,8 +15,10 @@ COPY --from=web /src/web/dist/index.html /src/internal/plugin/web/dist/index.htm
 RUN CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" \
     go build -buildvcs=false -tags cshared -buildmode=c-shared \
     -o /out/cpa-key-policy.so ./cmd/cpa-key-policy
+RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" \
+    go build -buildvcs=false -o /out/cpa-key-policy-migrate ./cmd/cpa-key-policy-migrate
 
 FROM busybox:1.37.0
 COPY --from=build /out/cpa-key-policy.so /plugin/cpa-key-policy.so
+COPY --from=build /out/cpa-key-policy-migrate /usr/local/bin/cpa-key-policy-migrate
 RUN chmod 0755 /plugin/cpa-key-policy.so
-
