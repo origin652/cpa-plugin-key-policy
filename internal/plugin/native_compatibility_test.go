@@ -62,6 +62,25 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 	if _, err := app.HandleMethod(MethodPluginReconfigure, configRequest); err != nil {
 		t.Fatal(err)
 	}
+	registration := app.managementRegistration()
+	if len(registration.Resources) != 1 || registration.Resources[0].Path != "/index.html" {
+		t.Fatalf("native mode must register its resource UI: %#v", registration.Resources)
+	}
+	resourceRequest, _ := json.Marshal(ManagementRequest{
+		Method: "GET",
+		Path:   "/v0/resource/plugins/cpa-key-policy/index.html",
+	})
+	rawResource, errResource := app.HandleMethod(MethodManagementHandle, resourceRequest)
+	if errResource != nil {
+		t.Fatal(errResource)
+	}
+	var resource ManagementResponse
+	if err := unmarshalOK(rawResource, &resource); err != nil {
+		t.Fatal(err)
+	}
+	if resource.StatusCode != 200 || len(resource.Body) == 0 {
+		t.Fatalf("native resource UI unavailable: %#v", resource)
+	}
 
 	requests := map[string]string{
 		"gpt-5.6-sol":                    "codex-csil/gpt-5.6-sol",

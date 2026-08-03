@@ -597,6 +597,9 @@ func (a *App) managementRegistration() ManagementRegistrationResponse {
 				{Method: http.MethodDelete, Path: base + "/policies", Description: "Delete policy by key_hash without changing the native CPA key."},
 				{Method: http.MethodGet, Path: base + "/status", Description: "Show native access-policy runtime status."},
 			},
+			Resources: []ResourceRoute{
+				{Path: web.IndexPath, Menu: "Key Policy", Description: "Manage access and quotas for CPA native API keys."},
+			},
 		}
 	}
 	return ManagementRegistrationResponse{
