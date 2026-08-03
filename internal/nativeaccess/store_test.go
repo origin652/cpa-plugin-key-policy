@@ -144,3 +144,37 @@ func TestWildcardGrantsAndProviderConstraint(t *testing.T) {
 		t.Fatalf("expected two visible models, handled=%v models=%#v", handled, models)
 	}
 }
+
+func TestPolicyHotReloadAcrossPluginInstances(t *testing.T) {
+	dir := t.TempDir()
+	keysFile := filepath.Join(dir, "config.yaml")
+	stateFile := filepath.Join(dir, "state.json")
+	const key = "sk-shared-instance"
+	if err := os.WriteFile(keysFile, []byte("api-keys:\n  - "+key+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := New(keysFile, stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := New(keysFile, stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Upsert(Policy{
+		KeyHash: HashKey(key),
+		Enabled: true,
+		Grants:  []Grant{{Provider: "codex", Model: "gpt-5.6-sol"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reader.Authenticate(key, "gpt-5.6-sol", false); !got.Allowed {
+		t.Fatalf("reader did not hot-reload new policy: %#v", got)
+	}
+	if err := writer.Delete(HashKey(key)); err != nil {
+		t.Fatal(err)
+	}
+	if got := reader.Authenticate(key, "gpt-5.6-sol", false); got.Allowed || got.Reason != "policy_missing" {
+		t.Fatalf("reader retained deleted policy: %#v", got)
+	}
+}

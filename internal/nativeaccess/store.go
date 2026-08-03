@@ -77,11 +77,16 @@ type Store struct {
 	stateFile      string
 	keysModTime    int64
 	keysSize       int64
+	stateModTime   int64
+	stateSize      int64
 	activeByHash   map[string]string
 	policiesByHash map[string]Policy
 	usageByHash    map[string]*usage
 	rpm            map[string][]time.Time
 	now            func() time.Time
+	dirty          bool
+	lastFlush      time.Time
+	flushScheduled bool
 }
 
 func New(keysFile, stateFile string) (*Store, error) {
@@ -102,7 +107,7 @@ func New(keysFile, stateFile string) (*Store, error) {
 		rpm:            make(map[string][]time.Time),
 		now:            time.Now,
 	}
-	if err := s.loadState(); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := s.loadStateLocked(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	if err := s.refreshKeysLocked(true); err != nil {
@@ -233,7 +238,7 @@ func (s *Store) refreshKeys() error {
 	return s.refreshKeysLocked(false)
 }
 
-func (s *Store) loadState() error {
+func (s *Store) loadStateLocked() error {
 	raw, err := os.ReadFile(s.stateFile)
 	if err != nil {
 		return err
@@ -242,15 +247,21 @@ func (s *Store) loadState() error {
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return fmt.Errorf("parse native policy state: %w", err)
 	}
+	nextPolicies := make(map[string]Policy, len(data.Policies))
 	for _, input := range data.Policies {
 		policy, err := normalizePolicy(input)
 		if err != nil {
 			return err
 		}
-		s.policiesByHash[policy.KeyHash] = policy
+		nextPolicies[policy.KeyHash] = policy
 	}
+	s.policiesByHash = nextPolicies
 	if data.Usage != nil {
-		s.usageByHash = data.Usage
+		mergeUsageMaps(s.usageByHash, data.Usage)
+	}
+	if info, statErr := os.Stat(s.stateFile); statErr == nil {
+		s.stateModTime = info.ModTime().UnixNano()
+		s.stateSize = info.Size()
 	}
 	return nil
 }
@@ -272,11 +283,97 @@ func (s *Store) saveLocked() error {
 	if err := os.WriteFile(temp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(temp, s.stateFile)
+	if err := os.Rename(temp, s.stateFile); err != nil {
+		return err
+	}
+	if info, statErr := os.Stat(s.stateFile); statErr == nil {
+		s.stateModTime = info.ModTime().UnixNano()
+		s.stateSize = info.Size()
+	}
+	s.dirty = false
+	s.lastFlush = s.now()
+	return nil
+}
+
+func (s *Store) refreshStateLocked(force bool) error {
+	info, err := os.Stat(s.stateFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !force && s.stateModTime == info.ModTime().UnixNano() && s.stateSize == info.Size() {
+		return nil
+	}
+	return s.loadStateLocked()
+}
+
+func mergeUsageMaps(current, incoming map[string]*usage) {
+	for hash, source := range incoming {
+		if source == nil {
+			continue
+		}
+		target := current[hash]
+		if target == nil {
+			copyUsage := *source
+			current[hash] = &copyUsage
+			continue
+		}
+		mergeWindowMax(&target.Daily, source.Daily)
+		mergeWindowMax(&target.Weekly, source.Weekly)
+	}
+}
+
+func mergeWindowMax(target *window, source window) {
+	if source.Start.After(target.Start) {
+		*target = source
+		return
+	}
+	if source.Start.Equal(target.Start) {
+		if source.Calls > target.Calls {
+			target.Calls = source.Calls
+		}
+		if source.Tokens > target.Tokens {
+			target.Tokens = source.Tokens
+		}
+	}
+}
+
+func acquireFileLock(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, err
+	}
+	lockPath := path + ".lock"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if err := os.Mkdir(lockPath, 0o700); err == nil {
+			return func() { _ = os.Remove(lockPath) }, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if info, err := os.Stat(lockPath); err == nil && time.Since(info.ModTime()) > time.Minute {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for state lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (s *Store) refreshState() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshStateLocked(false)
 }
 
 func (s *Store) Identities() ([]Identity, error) {
 	if err := s.refreshKeys(); err != nil {
+		return nil, err
+	}
+	if err := s.refreshState(); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -291,6 +388,7 @@ func (s *Store) Identities() ([]Identity, error) {
 }
 
 func (s *Store) Policies() []Policy {
+	_ = s.refreshState()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Policy, 0, len(s.policiesByHash))
@@ -329,8 +427,16 @@ func (s *Store) Apply(inputs []Policy, replace, dryRun bool) ([]Policy, error) {
 	if err := s.refreshKeys(); err != nil {
 		return nil, err
 	}
+	release, err := acquireFileLock(s.stateFile)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.refreshStateLocked(true); err != nil {
+		return nil, err
+	}
 	for _, policy := range normalized {
 		if _, active := s.activeByHash[policy.KeyHash]; !active {
 			return nil, fmt.Errorf("%s is not an active CPA api-key", policy.KeyHash)
@@ -362,8 +468,16 @@ func (s *Store) Apply(inputs []Policy, replace, dryRun bool) ([]Policy, error) {
 
 func (s *Store) Delete(hash string) error {
 	hash = strings.ToLower(strings.TrimSpace(hash))
+	release, err := acquireFileLock(s.stateFile)
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.refreshStateLocked(true); err != nil {
+		return err
+	}
 	delete(s.policiesByHash, hash)
 	delete(s.usageByHash, hash)
 	delete(s.rpm, hash)
@@ -384,6 +498,9 @@ func resetWindows(u *usage, now time.Time) {
 func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision {
 	if err := s.refreshKeys(); err != nil {
 		return Decision{Reason: "native_keys_unavailable"}
+	}
+	if err := s.refreshState(); err != nil {
+		return Decision{Reason: "policy_state_unavailable"}
 	}
 	hash := HashKey(rawKey)
 	s.mu.Lock()
@@ -457,6 +574,7 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 	}
 	u.Daily.Calls++
 	u.Weekly.Calls++
+	s.dirty = true
 	decision.Allowed = true
 	decision.Reason = "allowed"
 	return decision
@@ -468,6 +586,9 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 // model router so another provider cannot satisfy the same model name.
 func (s *Store) RouteProvider(rawKey, model string) (string, bool) {
 	if err := s.refreshKeys(); err != nil {
+		return "", false
+	}
+	if err := s.refreshState(); err != nil {
 		return "", false
 	}
 	hash := HashKey(rawKey)
@@ -496,6 +617,9 @@ func (s *Store) RouteProvider(rawKey, model string) (string, bool) {
 // the OpenAI model catalog itself is keyed by model ID.
 func (s *Store) FilterModels(rawKey string, models []map[string]any, modelProviders map[string][]string) ([]map[string]any, bool) {
 	if err := s.refreshKeys(); err != nil {
+		return nil, false
+	}
+	if err := s.refreshState(); err != nil {
 		return nil, false
 	}
 	hash := HashKey(rawKey)
@@ -556,6 +680,30 @@ func (s *Store) RecordUsage(rawKey string, tokens int64) {
 	resetWindows(u, now)
 	u.Daily.Tokens += tokens
 	u.Weekly.Tokens += tokens
+	s.dirty = true
+	if !s.flushScheduled && (s.lastFlush.IsZero() || now.Sub(s.lastFlush) >= 15*time.Second) {
+		s.flushScheduled = true
+		go s.Flush()
+	}
+}
+
+// Flush persists accumulated usage without rewriting on every request.
+func (s *Store) Flush() {
+	release, err := acquireFileLock(s.stateFile)
+	if err != nil {
+		s.mu.Lock()
+		s.flushScheduled = false
+		s.mu.Unlock()
+		return
+	}
+	defer release()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushScheduled = false
+	if !s.dirty {
+		return
+	}
+	_ = s.refreshStateLocked(true)
 	_ = s.saveLocked()
 }
 

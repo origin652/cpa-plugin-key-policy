@@ -113,6 +113,9 @@ func (a *App) configure(raw []byte) error {
 
 // Shutdown flushes usage. Host calls this on plugin unload.
 func (a *App) Shutdown() {
+	if a.native != nil {
+		a.native.Flush()
+	}
 	a.store.StopUsageFlusher()
 }
 
