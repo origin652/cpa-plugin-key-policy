@@ -143,6 +143,32 @@ export interface StatusResponse {
   rpm_usage?: Record<string, unknown>;
 }
 
+export interface NativeIdentity {
+  key_hash: string;
+  key_preview: string;
+  managed: boolean;
+}
+
+export interface NativeGrant {
+  provider: string;
+  model: string;
+  group?: string;
+  upstream_prefix?: string;
+  accepted_prefixes?: string[];
+  accepted_models?: string[];
+}
+
+export interface NativePolicy {
+  key_hash: string;
+  enabled: boolean;
+  grants: NativeGrant[];
+  rpm?: number;
+  daily_calls?: number;
+  weekly_calls?: number;
+  daily_tokens?: number;
+  weekly_tokens?: number;
+}
+
 // --- Advanced Mapping types ---
 
 // AliasTarget is one selectable destination for an alias.

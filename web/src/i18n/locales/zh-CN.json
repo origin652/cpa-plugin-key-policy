@@ -22,6 +22,28 @@
   "session": {
     "restoring": "正在从面板恢复会话…"
   },
+  "native": {
+    "title": "原生 Key 权限",
+    "identityHint": "身份直接来自 CPA api-keys；插件只维护权限与额度，不签发第二把 Key。",
+    "unmanaged": "未配置策略",
+    "edit": "权限与额度",
+    "editTitle": "编辑原生 Key 策略",
+    "enabled": "允许此 Key 发起请求",
+    "provider": "提供商（支持 *）",
+    "model": "规范模型（支持 * 和 ?）",
+    "group": "凭证组（例如 classify:csil）",
+    "upstreamPrefix": "CPA 原生前缀（例如 codex-csil）",
+    "acceptedPrefixes": "兼容旧前缀，逗号分隔",
+    "acceptedModels": "兼容旧模型全名，逗号分隔",
+    "addGrant": "添加权限",
+    "grantRequired": "至少需要一条完整权限",
+    "rpm": "每分钟请求数",
+    "dailyCalls": "每日调用次数",
+    "weeklyCalls": "每周调用次数",
+    "dailyTokens": "每日 Token",
+    "weeklyTokens": "每周 Token",
+    "zeroUnlimited": "0 表示不限制。兼容字段仅用于迁移，客户端切换完成后可移除。"
+  },
   "keys": {
     "newKey": "新建 Key",
     "refresh": "刷新",

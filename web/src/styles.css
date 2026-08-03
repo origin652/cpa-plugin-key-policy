@@ -306,6 +306,26 @@ td .mono, .mono { font-family: "Courier Prime", ui-monospace, Consolas, "Courier
   word-break: break-all; font-size: 13px; margin: 12px 0;
 }
 
+.native-check { display: flex; align-items: center; gap: 8px; margin: 14px 0; }
+.native-grid, .form-grid.two {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+}
+.native-chip-row, .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.native-chip-row .chip, .chip-row .chip {
+  border: 1px solid var(--border); border-radius: var(--r-full);
+  background: var(--bg); padding: 4px 9px; font-size: 12px;
+}
+.badge {
+  display: inline-flex; border-radius: var(--r-full); padding: 3px 9px;
+  border: 1px solid var(--border); color: var(--muted); font-size: 12px;
+}
+.badge.success { color: var(--success); border-color: var(--success); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+@media (max-width: 640px) {
+  .native-grid, .form-grid.two { grid-template-columns: 1fr; }
+}
+
 /* Inline toggle (KeyForm enabled checkbox) — styled like panel .switch */
 .switch { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
 .switch input { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); }

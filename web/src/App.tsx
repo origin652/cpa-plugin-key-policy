@@ -9,6 +9,8 @@ import KeyEdit from "./pages/KeyEdit";
 import KeyUsage from "./pages/KeyUsage";
 import ModelPick from "./pages/ModelPick";
 import Mapping, { AliasEditForm, RuleEditForm } from "./pages/Mapping";
+import NativeAccess from "./pages/NativeAccess";
+import { fetchPluginMode } from "./api/nativeAccess";
 
 function useAuthTick() {
   const [, setTick] = useState(0);
@@ -19,7 +21,7 @@ function useAuthTick() {
 // Desktop top horizontal nav. Mirrors the Stitch "Quiet Paper" design: left =
 // app title + base url, right = nav links + logout. Mobile keeps the legacy
 // .header (hidden on desktop via CSS) and bottom tab bar instead.
-function TopNav() {
+function TopNav({ mode }: { mode: "legacy" | "native-access" }) {
   const t = useT();
   const nav = useNavigate();
   const loc = useLocation();
@@ -38,8 +40,8 @@ function TopNav() {
         </div>
         <div className="topnav-actions">
           <Link to="/keys" className={"tn-link" + (onKeys && !onNew ? " active" : "")}>{t("header.keyList")}</Link>
-          <Link to="/keys/new" className={"tn-link" + (onNew ? " active" : "")}>{t("header.newKey")}</Link>
-          <Link to="/mapping" className={"tn-link" + (onMapping ? " active" : "")}>{t("header.mapping")}</Link>
+          {mode === "legacy" && <Link to="/keys/new" className={"tn-link" + (onNew ? " active" : "")}>{t("header.newKey")}</Link>}
+          {mode === "legacy" && <Link to="/mapping" className={"tn-link" + (onMapping ? " active" : "")}>{t("header.mapping")}</Link>}
           <button
             className="btn sm"
             onClick={() => { clearSession(); nav("/login"); }}
@@ -55,6 +57,7 @@ function TopNav() {
 function Shell() {
   const authed = useAuthTick();
   const [bootstrapped, setBootstrapped] = useState(false);
+  const [mode, setMode] = useState<"legacy" | "native-access" | null>(null);
   const t = useT();
 
   // When not yet authenticated, try once to reuse the panel's saved
@@ -72,6 +75,14 @@ function Shell() {
     };
   }, [authed, bootstrapped]);
 
+  useEffect(() => {
+    if (!authed) {
+      setMode(null);
+      return;
+    }
+    void fetchPluginMode().then(setMode).catch(() => setMode("legacy"));
+  }, [authed]);
+
   if (!authed) {
     if (!bootstrapped) {
       return <div className="app muted" style={{ padding: "40px 20px" }}>{t("session.restoring")}</div>;
@@ -83,20 +94,23 @@ function Shell() {
       </Routes>
     );
   }
+  if (mode === null) {
+    return <div className="app muted" style={{ padding: "40px 20px" }}>{t("keys.loading")}</div>;
+  }
   return (
     <div className="app">
-      <TopNav />
+      <TopNav mode={mode} />
       <Routes>
-        <Route path="/keys" element={<KeyList />} />
-        <Route path="/keys/new" element={<KeyNew />} />
-        <Route path="/keys/new/models" element={<ModelPick />} />
-        <Route path="/keys/:id/edit" element={<KeyEdit />} />
-        <Route path="/keys/:id/edit/models" element={<ModelPick />} />
-        <Route path="/mapping/pick-target" element={<ModelPick />} />
-        <Route path="/keys/:id/usage" element={<KeyUsage />} />
-        <Route path="/mapping" element={<Mapping />} />
-        <Route path="/mapping/alias/:aliasName" element={<AliasEditForm />} />
-        <Route path="/mapping/rule/:ruleName" element={<RuleEditForm />} />
+        <Route path="/keys" element={mode === "native-access" ? <NativeAccess /> : <KeyList />} />
+        {mode === "legacy" && <Route path="/keys/new" element={<KeyNew />} />}
+        {mode === "legacy" && <Route path="/keys/new/models" element={<ModelPick />} />}
+        {mode === "legacy" && <Route path="/keys/:id/edit" element={<KeyEdit />} />}
+        {mode === "legacy" && <Route path="/keys/:id/edit/models" element={<ModelPick />} />}
+        {mode === "legacy" && <Route path="/mapping/pick-target" element={<ModelPick />} />}
+        {mode === "legacy" && <Route path="/keys/:id/usage" element={<KeyUsage />} />}
+        {mode === "legacy" && <Route path="/mapping" element={<Mapping />} />}
+        {mode === "legacy" && <Route path="/mapping/alias/:aliasName" element={<AliasEditForm />} />}
+        {mode === "legacy" && <Route path="/mapping/rule/:ruleName" element={<RuleEditForm />} />}
         <Route path="*" element={<Navigate to="/keys" replace />} />
       </Routes>
     </div>

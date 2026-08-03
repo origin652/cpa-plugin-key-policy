@@ -21,6 +21,28 @@
   "session": {
     "restoring": "正在從面板還原工作階段…"
   },
+  "native": {
+    "title": "原生 Key 權限",
+    "identityHint": "身分直接來自 CPA api-keys；外掛只維護權限與額度，不簽發第二把 Key。",
+    "unmanaged": "尚未設定策略",
+    "edit": "權限與額度",
+    "editTitle": "編輯原生 Key 策略",
+    "enabled": "允許此 Key 發起請求",
+    "provider": "提供商（支援 *）",
+    "model": "標準模型（支援 * 和 ?）",
+    "group": "憑證群組（例如 classify:csil）",
+    "upstreamPrefix": "CPA 原生前綴（例如 codex-csil）",
+    "acceptedPrefixes": "相容舊前綴，以逗號分隔",
+    "acceptedModels": "相容舊模型全名，以逗號分隔",
+    "addGrant": "新增權限",
+    "grantRequired": "至少需要一條完整權限",
+    "rpm": "每分鐘請求數",
+    "dailyCalls": "每日呼叫次數",
+    "weeklyCalls": "每週呼叫次數",
+    "dailyTokens": "每日 Token",
+    "weeklyTokens": "每週 Token",
+    "zeroUnlimited": "0 表示不限制。相容欄位僅供遷移，客戶端切換完成後可移除。"
+  },
   "keys": {
     "newKey": "新建 Key",
     "refresh": "重新整理",

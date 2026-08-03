@@ -22,6 +22,28 @@
   "session": {
     "restoring": "Restoring session from panel…"
   },
+  "native": {
+    "title": "Native key access",
+    "identityHint": "Identities come directly from CPA api-keys. The plugin stores access and quotas, and never issues a second key.",
+    "unmanaged": "No policy",
+    "edit": "Access and quotas",
+    "editTitle": "Edit native key policy",
+    "enabled": "Allow this key to make requests",
+    "provider": "Provider (supports *)",
+    "model": "Canonical model (supports * and ?)",
+    "group": "Credential group (for example classify:csil)",
+    "upstreamPrefix": "CPA native prefix (for example codex-csil)",
+    "acceptedPrefixes": "Legacy prefixes, comma-separated",
+    "acceptedModels": "Exact legacy model names, comma-separated",
+    "addGrant": "Add access rule",
+    "grantRequired": "At least one complete access rule is required",
+    "rpm": "Requests per minute",
+    "dailyCalls": "Daily calls",
+    "weeklyCalls": "Weekly calls",
+    "dailyTokens": "Daily tokens",
+    "weeklyTokens": "Weekly tokens",
+    "zeroUnlimited": "Zero means unlimited. Compatibility fields can be removed after clients migrate."
+  },
   "keys": {
     "newKey": "New Key",
     "refresh": "Refresh",
