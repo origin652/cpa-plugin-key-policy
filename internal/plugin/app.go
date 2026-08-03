@@ -9,12 +9,15 @@ import (
 	"strings"
 	"sync"
 
+	"cpa-key-policy/internal/nativeaccess"
 	"cpa-key-policy/internal/plugin/web"
 	"cpa-key-policy/internal/policy"
 )
 
 type App struct {
 	store         *policy.Store
+	native        *nativeaccess.Store
+	nativeMode    bool
 	classifyMu    sync.RWMutex
 	classifyCache map[string][]string
 }
@@ -82,6 +85,18 @@ func (a *App) configure(raw []byte) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Mode == "native-access" {
+		a.store.StopUsageFlusher()
+		native, errNative := nativeaccess.New(cfg.NativeKeysFile, cfg.NativeStateFile)
+		if errNative != nil {
+			return errNative
+		}
+		a.native = native
+		a.nativeMode = true
+		return nil
+	}
+	a.native = nil
+	a.nativeMode = false
 	if err := a.store.Configure(cfg); err != nil {
 		return err
 	}
@@ -100,32 +115,62 @@ func (a *App) Shutdown() {
 }
 
 func (a *App) registration() Registration {
+	capabilities := Capabilities{
+		FrontendAuthProvider:          true,
+		FrontendAuthProviderExclusive: a.nativeMode,
+		ModelRouter:                   !a.nativeMode,
+		Scheduler:                     !a.nativeMode,
+		ResponseInterceptor:           !a.nativeMode,
+		UsagePlugin:                   true,
+		ManagementAPI:                 true,
+	}
 	return Registration{
 		SchemaVersion: SchemaVersion,
 		Metadata: Metadata{
 			Name:             PluginName,
 			Version:          Version,
-			Author:           "cpa-key-policy",
-			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
+			Author:           "linonetwo",
+			GitHubRepository: "https://github.com/linonetwo/cpa-plugin-key-policy",
 			ConfigFields: []ConfigField{
 				{Name: "enabled", Type: "boolean", Description: "Enable or disable this plugin without unloading it."},
+				{Name: "mode", Type: "string", EnumValues: []string{"legacy", "native-access"}, Description: "native-access uses CPA api-keys as the only key source and stores authorization only."},
 				{Name: "state_file", Type: "string", Description: "JSON state file used for key policy changes made through the Management API."},
+				{Name: "native_keys_file", Type: "string", Description: "CPA config.yaml containing the native api-keys list."},
+				{Name: "native_state_file", Type: "string", Description: "Authorization grants, quotas, and counters; never plaintext keys."},
 				{Name: "keys", Type: "array", Description: "Initial downstream key policy list. State file wins after it exists."},
 			},
 		},
-		Capabilities: Capabilities{
-			FrontendAuthProvider:          true,
-			FrontendAuthProviderExclusive: false,
-			ModelRouter:                   true,
-			Scheduler:                     true,
-			ResponseInterceptor:           true,
-			UsagePlugin:                   true,
-			ManagementAPI:                 true,
-		},
+		Capabilities: capabilities,
 	}
 }
 
 func (a *App) authenticate(raw []byte) ([]byte, error) {
+	if a.nativeMode {
+		var req FrontendAuthRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, err
+		}
+		rawKey := policy.ExtractAPIKey(req.Headers, req.Query)
+		modelsEndpoint := policy.IsModelsEndpoint(req.Path)
+		requested := policy.ExtractRequestedModel(req.Path, req.Query, req.Body)
+		decision := a.native.Authenticate(rawKey, requested, modelsEndpoint)
+		if !decision.Known || !decision.Allowed {
+			return OKEnvelope(FrontendAuthResponse{Authenticated: false})
+		}
+		metadata := map[string]string{
+			"provider":        PluginID,
+			"key_hash":        decision.Principal,
+			"requested_model": decision.Model,
+		}
+		if decision.Provider != "" {
+			metadata["authorized_provider"] = decision.Provider
+		}
+		return OKEnvelope(FrontendAuthResponse{
+			Authenticated: true,
+			Principal:     decision.Principal,
+			Metadata:      metadata,
+		})
+	}
 	// Keep independently loaded auth instances in sync with management changes.
 	if err := a.store.RefreshFromDisk(); err != nil {
 		return nil, err
@@ -467,6 +512,14 @@ func (a *App) handleUsage(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return OKEnvelope(UsageHandleResponse{})
 	}
+	if a.nativeMode {
+		tokens := req.Detail.TotalTokens
+		if tokens <= 0 {
+			tokens = req.Detail.InputTokens + req.Detail.OutputTokens
+		}
+		a.native.RecordUsage(req.APIKey, tokens)
+		return OKEnvelope(UsageHandleResponse{})
+	}
 	_ = a.store.RecordUsage(req.APIKey, req.Alias, req.Model, req.Failed, policy.UsageDetail{
 		InputTokens:         req.Detail.InputTokens,
 		OutputTokens:        req.Detail.OutputTokens,
@@ -481,6 +534,17 @@ func (a *App) handleUsage(raw []byte) ([]byte, error) {
 
 func (a *App) managementRegistration() ManagementRegistrationResponse {
 	base := "/plugins/" + PluginID
+	if a.nativeMode {
+		return ManagementRegistrationResponse{
+			Routes: []ManagementRoute{
+				{Method: http.MethodGet, Path: base + "/identities", Description: "List active CPA native keys by hash and policy status."},
+				{Method: http.MethodGet, Path: base + "/policies", Description: "List native-key access policies."},
+				{Method: http.MethodPut, Path: base + "/policies", Description: "Create or replace authorization and quota policy for an active native key."},
+				{Method: http.MethodDelete, Path: base + "/policies", Description: "Delete policy by key_hash without changing the native CPA key."},
+				{Method: http.MethodGet, Path: base + "/status", Description: "Show native access-policy runtime status."},
+			},
+		}
+	}
 	return ManagementRegistrationResponse{
 		Routes: []ManagementRoute{
 			{Method: http.MethodGet, Path: base + "/keys", Description: "List downstream CPA key policies."},
@@ -523,6 +587,50 @@ func (a *App) handleManagement(raw []byte) ([]byte, error) {
 	}
 
 	base := "/v0/management/plugins/" + PluginID
+	if a.nativeMode {
+		switch {
+		case req.Method == http.MethodGet && path == base+"/identities":
+			identities, err := a.native.Identities()
+			if err != nil {
+				return OKEnvelope(jsonError(http.StatusInternalServerError, "native_keys_unavailable", err.Error()))
+			}
+			return OKEnvelope(jsonResponse(http.StatusOK, map[string]any{"identities": identities}))
+		case req.Method == http.MethodGet && path == base+"/policies":
+			return OKEnvelope(jsonResponse(http.StatusOK, map[string]any{"policies": a.native.Policies()}))
+		case req.Method == http.MethodPut && path == base+"/policies":
+			var input nativeaccess.Policy
+			if err := json.Unmarshal(req.Body, &input); err != nil {
+				return OKEnvelope(jsonError(http.StatusBadRequest, "invalid_json", err.Error()))
+			}
+			if err := a.native.Upsert(input); err != nil {
+				return OKEnvelope(jsonError(http.StatusBadRequest, "invalid_policy", err.Error()))
+			}
+			return OKEnvelope(jsonResponse(http.StatusOK, map[string]any{"policy": input}))
+		case req.Method == http.MethodDelete && path == base+"/policies":
+			hash := ""
+			if values := req.Query["key_hash"]; len(values) > 0 {
+				hash = values[0]
+			}
+			if strings.TrimSpace(hash) == "" {
+				var input struct {
+					KeyHash string `json:"key_hash"`
+				}
+				_ = json.Unmarshal(req.Body, &input)
+				hash = input.KeyHash
+			}
+			if strings.TrimSpace(hash) == "" {
+				return OKEnvelope(jsonError(http.StatusBadRequest, "missing_key_hash", "key_hash is required"))
+			}
+			if err := a.native.Delete(hash); err != nil {
+				return OKEnvelope(jsonError(http.StatusInternalServerError, "delete_failed", err.Error()))
+			}
+			return OKEnvelope(jsonResponse(http.StatusOK, map[string]any{"deleted": true, "key_hash": hash}))
+		case req.Method == http.MethodGet && path == base+"/status":
+			return OKEnvelope(jsonResponse(http.StatusOK, a.native.Status()))
+		default:
+			return OKEnvelope(jsonError(http.StatusNotFound, "not_found", "unknown management route"))
+		}
+	}
 	if strings.HasPrefix(path, base) {
 		if err := a.store.RefreshFromDisk(); err != nil {
 			return OKEnvelope(jsonError(http.StatusInternalServerError, "state_refresh_failed", err.Error()))

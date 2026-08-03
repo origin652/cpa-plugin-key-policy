@@ -16,7 +16,16 @@ import (
 
 type Config struct {
 	Enabled   bool        `yaml:"enabled" json:"enabled"`
-	StateFile string      `yaml:"state_file" json:"state_file"`
+	// Mode controls the plugin's identity model. "legacy" preserves the
+	// historical plugin-owned keys and model mappings. "native-access" uses
+	// CPA's api-keys as the only key source and stores authorization policy
+	// only; it never creates, copies, rotates, or deletes keys.
+	Mode       string      `yaml:"mode,omitempty" json:"mode,omitempty"`
+	StateFile  string      `yaml:"state_file" json:"state_file"`
+	// NativeKeysFile is the CPA config.yaml read by native-access mode.
+	NativeKeysFile string  `yaml:"native_keys_file,omitempty" json:"native_keys_file,omitempty"`
+	// NativeStateFile contains hashes, grants, quotas, and counters only.
+	NativeStateFile string `yaml:"native_state_file,omitempty" json:"native_state_file,omitempty"`
 	Keys      []KeyConfig `yaml:"keys" json:"keys"`
 	// Aliases is the global alias mapping table. Each entry maps a downstream
 	// alias name to one or more (provider, model, group) targets with a shared
@@ -304,8 +313,11 @@ type State struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Enabled:   true,
-		StateFile: "cpa-key-policy-state.json",
+		Enabled:         true,
+		Mode:            "legacy",
+		StateFile:       "cpa-key-policy-state.json",
+		NativeKeysFile:  "/CLIProxyAPI/config.yaml",
+		NativeStateFile: "cpa-key-access-policy-state.json",
 	}
 }
 
@@ -319,6 +331,19 @@ func DecodeConfig(raw []byte) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.StateFile) == "" {
 		cfg.StateFile = DefaultConfig().StateFile
+	}
+	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if cfg.Mode == "" {
+		cfg.Mode = DefaultConfig().Mode
+	}
+	if cfg.Mode != "legacy" && cfg.Mode != "native-access" {
+		return Config{}, fmt.Errorf("mode must be \"legacy\" or \"native-access\"")
+	}
+	if strings.TrimSpace(cfg.NativeKeysFile) == "" {
+		cfg.NativeKeysFile = DefaultConfig().NativeKeysFile
+	}
+	if strings.TrimSpace(cfg.NativeStateFile) == "" {
+		cfg.NativeStateFile = DefaultConfig().NativeStateFile
 	}
 	if err := normalizeConfig(&cfg); err != nil {
 		return Config{}, err
