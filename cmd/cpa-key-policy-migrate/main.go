@@ -136,6 +136,7 @@ func replaceAPIKeys(raw []byte, keys []string) ([]byte, []string, error) {
 	}
 	value.Kind = yaml.SequenceNode
 	value.Tag = "!!seq"
+	value.Style = 0
 	value.Content = nil
 	for _, key := range keys {
 		value.Content = append(value.Content, &yaml.Node{

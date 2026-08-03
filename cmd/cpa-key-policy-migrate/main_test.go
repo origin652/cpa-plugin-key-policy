@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,6 +41,10 @@ func TestRunStagesLosslessMigration(t *testing.T) {
 	unchanged, _ := os.ReadFile(configPath)
 	if string(unchanged) != string(source) {
 		t.Fatal("source config was mutated")
+	}
+	staged, _ := os.ReadFile(outputConfig)
+	if !bytes.Contains(staged, []byte("api-keys:\n  - \"")) {
+		t.Fatalf("staged api-keys must use a block sequence")
 	}
 	store, err := nativeaccess.New(outputConfig, outputPolicy)
 	if err != nil {
