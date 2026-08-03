@@ -724,7 +724,7 @@ func TestAliasUsageLegacyStateMigrates(t *testing.T) {
 	if err := store.FlushUsage(); err != nil {
 		t.Fatal(err)
 	}
-	raw2, err := os.ReadFile(path)
+	raw2, err := os.ReadFile(path + ".usage")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,12 +28,33 @@ type Config struct {
 	ClassifyRules []ClassifyRule `yaml:"classify_rules,omitempty" json:"classify_rules,omitempty"`
 }
 
+func acquireStateFileLock(path string) (func(), error) {
+	lockPath := filepath.Clean(path) + ".lock"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if err := os.Mkdir(lockPath, 0o700); err == nil {
+			return func() { _ = os.Remove(lockPath) }, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if info, err := os.Stat(lockPath); err == nil && time.Since(info.ModTime()) > time.Minute {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for state file lock %q", lockPath)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 type KeyConfig struct {
 	ID         string      `yaml:"id" json:"id"`
 	Name       string      `yaml:"name" json:"name"`
 	Enabled    bool        `yaml:"enabled" json:"enabled"`
 	KeyHash    string      `yaml:"key_hash" json:"key_hash"`
 	KeyPreview string      `yaml:"key_preview" json:"key_preview"`
+	PlainKey   string      `yaml:"plain_key,omitempty" json:"plain_key,omitempty"`
 	RPM        int         `yaml:"rpm" json:"rpm"`
 	Models     []ModelRule `yaml:"models" json:"models"`
 	// Aliases references global alias mappings by name. When non-empty, the key
@@ -655,6 +676,22 @@ func LoadState(path string) (*State, error) {
 	if state.Usage == nil {
 		state.Usage = make(map[string]*UsageState)
 	}
+	// Usage is persisted to a sidecar so periodic flushes never rewrite the
+	// management-owned key/alias state. Prefer the sidecar when present.
+	if usageRaw, usageErr := os.ReadFile(path + ".usage"); usageErr == nil {
+		var usageState struct {
+			Usage     map[string]*UsageState `json:"usage"`
+			UpdatedAt time.Time              `json:"updated_at"`
+		}
+		if errUnmarshal := json.Unmarshal(usageRaw, &usageState); errUnmarshal != nil {
+			return nil, fmt.Errorf("load usage sidecar: %w", errUnmarshal)
+		}
+		if usageState.Usage != nil && !usageState.UpdatedAt.Before(state.UpdatedAt) {
+			state.Usage = usageState.Usage
+		}
+	} else if !errors.Is(usageErr, os.ErrNotExist) {
+		return nil, usageErr
+	}
 	return &state, nil
 }
 
@@ -663,6 +700,11 @@ func SaveState(path string, keys []KeyConfig, usage map[string]*UsageState, alia
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	unlock, err := acquireStateFileLock(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	// Models is a DERIVED field (resolved from Aliases × global table via
 	// resolveAliasRefsToModels); the canonical source is Aliases. Persisting
 	// it would (a) make the on-disk state drift from the live in-memory copy
@@ -683,41 +725,76 @@ func SaveState(path string, keys []KeyConfig, usage map[string]*UsageState, alia
 	return atomicWriteStateFile(path, raw)
 }
 
-// SaveUsageOnly atomically writes only the usage ledger to the state file,
-// preserving the key list already on disk. The key list is authoritative on
-// disk (management API mutates keys + SaveState synchronously), so the
-// periodic usage flush must not overwrite it with a stale in-memory snapshot
-// (Bug 3: FlushUsage rewriting the whole key list could pin a truncated key
-// set to disk if memory was briefly wrong). It loads the current on-disk
-// state, replaces only Usage, and writes back atomically. If the state file
-// does not exist yet, keys defaults to empty (a subsequent key mutation will
-// create it properly via SaveState).
-func SaveUsageOnly(path string, usage map[string]*UsageState) error {
+// SaveKeyState transactionally merges one management-owned key into the latest
+// on-disk state. This is safe across independently scheduled plugin callbacks:
+// unrelated keys written by another callback are preserved.
+func SaveKeyState(path string, key KeyConfig, aliases []AliasMapping, rules []ClassifyRule) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	var keys []KeyConfig
-	var aliases []AliasMapping
-	var rules []ClassifyRule
-	if cur, err := LoadState(path); err == nil {
-		keys = cur.Keys
-		aliases = cur.Aliases
-		rules = cur.ClassifyRules
-	} else if !errors.Is(err, os.ErrNotExist) {
+	unlock, err := acquireStateFileLock(path)
+	if err != nil {
 		return err
 	}
-	// Strip the derived Models field from every key (see SaveState for why).
-	// On-disk Models may contain pre-fix duplicates from multi-target aliases;
-	// repersisting them would re-trigger the bug on the next reload.
-	for i := range keys {
-		keys[i].Models = nil
+	defer unlock()
+	state, err := LoadState(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	state := State{Version: 1, Keys: keys, Usage: usage, UpdatedAt: time.Now().UTC(), Aliases: aliases, ClassifyRules: rules}
+	if state == nil {
+		state = &State{Version: 1, Usage: make(map[string]*UsageState)}
+	}
+	key.Models = nil
+	replaced := false
+	for i := range state.Keys {
+		if state.Keys[i].ID == key.ID {
+			state.Keys[i] = key
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		state.Keys = append(state.Keys, key)
+	}
+	if len(aliases) > 0 {
+		state.Aliases = aliases
+	}
+	if len(rules) > 0 {
+		state.ClassifyRules = rules
+	}
+	state.Version = 1
+	state.UpdatedAt = time.Now().UTC()
 	raw, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWriteStateFile(path, raw)
+}
+
+// SaveUsageOnly writes usage to a dedicated sidecar. Periodic usage flushes
+// must never rewrite the management-owned key, alias, or classification state:
+// CPA may load multiple isolated plugin instances, and any instance can hold a
+// stale in-memory configuration snapshot.
+func SaveUsageOnly(path string, usage map[string]*UsageState) error {
+	usagePath := path + ".usage"
+	if err := os.MkdirAll(filepath.Dir(usagePath), 0o700); err != nil {
+		return err
+	}
+	unlock, err := acquireStateFileLock(usagePath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	state := struct {
+		Version   int                    `json:"version"`
+		Usage     map[string]*UsageState `json:"usage"`
+		UpdatedAt time.Time              `json:"updated_at"`
+	}{Version: 1, Usage: usage, UpdatedAt: time.Now().UTC()}
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteStateFile(usagePath, raw)
 }
 
 func atomicWriteStateFile(path string, raw []byte) error {

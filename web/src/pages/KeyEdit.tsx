@@ -68,6 +68,18 @@ export default function KeyEdit() {
       alert((e as Error).message ?? t("keys.resetFailed"));
     }
   };
+  const onCopy = async () => {
+    if (!key.plain_key) {
+      alert(t("keys.copyUnavailable"));
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(key.plain_key);
+      alert(t("keys.copyOk"));
+    } catch (e) {
+      alert((e as Error).message ?? t("keys.copyFailed"));
+    }
+  };
   const onDelete = async () => {
     if (!confirm(t("keys.deleteConfirm", { id: key.id }))) return;
     try {
@@ -83,6 +95,7 @@ export default function KeyEdit() {
       <div className="fp-head mobile-hidden">
         <h1>{t("edit.hTitle")}</h1>
         <div className="fp-actions">
+          <button className="btn sm" onClick={onCopy}>{t("keys.copy")}</button>
           <button className="btn sm" onClick={onReset}>{t("keys.resetRpm")}</button>
           <button className="btn sm" onClick={onRotate}>{t("keys.rotate")}</button>
           <button className="btn sm" onClick={() => nav("/keys")}>{t("keyForm.cancel")}</button>

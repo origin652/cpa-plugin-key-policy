@@ -59,6 +59,19 @@ export default function KeyList() {
     }
   };
 
+  const onCopy = async (key: KeyPublic) => {
+    if (!key.plain_key) {
+      alert(t("keys.copyUnavailable"));
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(key.plain_key);
+      alert(t("keys.copyOk"));
+    } catch (e) {
+      alert((e as Error).message ?? t("keys.copyFailed"));
+    }
+  };
+
   const onDelete = async (id: string) => {
     if (!confirm(t("keys.deleteConfirm", { id }))) return;
     try {
@@ -91,6 +104,7 @@ export default function KeyList() {
               key={k.id}
               k={k}
               onDelete={onDelete}
+              onCopy={onCopy}
               onRotate={onRotate}
               onReset={onReset}
             />
@@ -120,11 +134,13 @@ export default function KeyList() {
 function KeyCard({
   k,
   onDelete,
+  onCopy,
   onRotate,
   onReset,
 }: {
   k: KeyPublic;
   onDelete: (id: string) => void;
+  onCopy?: (key: KeyPublic) => void;
   onRotate?: (id: string) => void;
   onReset?: (id: string) => void;
 }) {
@@ -248,6 +264,7 @@ function KeyCard({
         <Link to={`/keys/${encodeURIComponent(k.id)}/edit`}>
           <button className="btn sm" onClick={(e) => e.stopPropagation()}>{t("keys.edit")}</button>
         </Link>
+        {onCopy && <button className="btn sm" onClick={(e) => { e.stopPropagation(); void onCopy(k); }}>{t("keys.copy")}</button>}
         {onReset && <button className="btn sm" onClick={(e) => { e.stopPropagation(); onReset(k.id); }}>{t("keys.resetRpm")}</button>}
         {onRotate && <button className="btn sm" onClick={(e) => { e.stopPropagation(); onRotate(k.id); }}>{t("keys.rotate")}</button>}
         <button className="btn sm danger" onClick={(e) => { e.stopPropagation(); onDelete(k.id); }}>{t("keys.delete")}</button>

@@ -12,15 +12,17 @@ import (
 )
 
 type Store struct {
-	mu         sync.RWMutex
-	updateMu   sync.Mutex
-	persistMu  sync.Mutex
-	enabled    bool
-	statePath  string
-	keys       map[string]*KeyConfig
-	keysByHash map[string]*KeyConfig
-	limiter    *RateLimiter
-	usage      *usageLedger
+	mu           sync.RWMutex
+	updateMu     sync.Mutex
+	persistMu    sync.Mutex
+	enabled      bool
+	statePath    string
+	stateModTime int64
+	stateSize    int64
+	keys         map[string]*KeyConfig
+	keysByHash   map[string]*KeyConfig
+	limiter      *RateLimiter
+	usage        *usageLedger
 	// flusher for periodically persisting the usage ledger to the state file.
 	flusher *usageFlusher
 	// aliases is the global alias mapping table from config.yaml. Used to
@@ -187,6 +189,10 @@ func (s *Store) Configure(cfg Config) error {
 	// deleted key cannot be resurrected from an older in-memory snapshot.
 	s.enabled = cfg.Enabled
 	s.statePath = statePath
+	if info, errStat := os.Stat(statePath); errStat == nil {
+		s.stateModTime = info.ModTime().UnixNano()
+		s.stateSize = info.Size()
+	}
 	// Store the global alias table and classify rules for routing/billing.
 	s.aliases = make(map[string]*AliasMapping, len(cfg.Aliases))
 	for i := range cfg.Aliases {
@@ -249,6 +255,83 @@ func (s *Store) StatePath() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.statePath
+}
+
+// RefreshFromDisk reloads management-owned state for this plugin instance.
+// CPA can instantiate the same shared library separately for management and
+// request capabilities, so one instance must not trust a stale startup copy.
+// Recent in-memory usage is intentionally preserved; its dedicated sidecar is
+// merged by LoadState on restart.
+func (s *Store) RefreshFromDisk() error {
+	path := s.StatePath()
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	modTime := info.ModTime().UnixNano()
+	s.mu.RLock()
+	unchanged := s.stateModTime == modTime && s.stateSize == info.Size()
+	s.mu.RUnlock()
+	if unchanged {
+		return nil
+	}
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+	info, err = os.Stat(path)
+	if err != nil {
+		return err
+	}
+	modTime = info.ModTime().UnixNano()
+	s.mu.RLock()
+	unchanged = s.stateModTime == modTime && s.stateSize == info.Size()
+	s.mu.RUnlock()
+	if unchanged {
+		return nil
+	}
+	state, err := LoadState(path)
+	if err != nil {
+		return err
+	}
+	s.mu.RLock()
+	aliases := state.Aliases
+	if len(aliases) == 0 {
+		aliases = s.aliasesSnapshotLocked()
+	}
+	rules := state.ClassifyRules
+	if len(rules) == 0 {
+		rules = s.classifyRulesSnapshotLocked()
+	}
+	s.mu.RUnlock()
+	merged := Config{Enabled: true, StateFile: path, Keys: state.Keys, Aliases: aliases, ClassifyRules: rules}
+	if err := normalizeConfig(&merged); err != nil {
+		return fmt.Errorf("refresh state: %w", err)
+	}
+	next := make(map[string]*KeyConfig, len(merged.Keys))
+	aliasLookup := make(map[string]*AliasMapping, len(merged.Aliases))
+	for i := range merged.Aliases {
+		aliasLookup[strings.ToLower(merged.Aliases[i].Alias)] = &merged.Aliases[i]
+	}
+	for i := range merged.Keys {
+		item := merged.Keys[i]
+		if len(item.Aliases) > 0 {
+			item.Models = resolveAliasRefsToModels(item.Aliases, aliasLookup)
+		}
+		next[item.ID] = &item
+	}
+	s.mu.Lock()
+	s.keys = next
+	s.updateAliasesLocked(merged.Aliases)
+	s.classifyRules = merged.ClassifyRules
+	s.rebuildKeysByHashLocked()
+	s.rrCounters = make(map[string]int)
+	s.pendingPicks = make(map[string][]pendingPick)
+	s.stateModTime = modTime
+	s.stateSize = info.Size()
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Store) Authenticate(method, path string, headers http.Header, query map[string][]string, body []byte) AuthDecision {
@@ -958,14 +1041,12 @@ func (s *Store) UpsertKey(input KeyConfig, persist bool) error {
 	s.clearPendingPicksForKeyLocked(key.ID)
 	// Update the store's global alias table if migration added new aliases.
 	s.updateAliasesLocked(cfg.Aliases)
-	keys := s.keysSnapshotLocked()
 	path := s.statePath
-	usage := s.usageSnapshotLocked()
 	aliases := s.aliasesSnapshotLocked()
 	rules := s.classifyRulesSnapshotLocked()
 	s.mu.Unlock()
 	if persist {
-		return s.saveState(path, keys, usage, aliases, rules)
+		return SaveKeyState(path, key, aliases, rules)
 	}
 	return nil
 }
@@ -1023,6 +1104,7 @@ func (s *Store) RotateKey(id string) (string, KeyConfig, error) {
 	}
 	key.KeyHash = hash
 	key.KeyPreview = PreviewKey(plain)
+	key.PlainKey = plain
 	key.UpdatedAt = time.Now().UTC()
 	copy := *key
 	copy.Models = append([]ModelRule(nil), key.Models...)

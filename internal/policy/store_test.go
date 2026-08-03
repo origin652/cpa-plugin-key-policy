@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -346,8 +347,8 @@ func TestSaveUsageOnlyDoesNotOverwriteCorruptState(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveUsageOnly(path, map[string]*UsageState{}); err == nil {
-		t.Fatal("SaveUsageOnly accepted a corrupt state file")
+	if err := SaveUsageOnly(path, map[string]*UsageState{}); err != nil {
+		t.Fatal(err)
 	}
 	current, err := os.ReadFile(path)
 	if err != nil {
@@ -355,6 +356,118 @@ func TestSaveUsageOnlyDoesNotOverwriteCorruptState(t *testing.T) {
 	}
 	if string(current) != string(original) {
 		t.Fatalf("corrupt state was overwritten: %q", current)
+	}
+	if _, err := os.Stat(path + ".usage"); err != nil {
+		t.Fatalf("usage sidecar was not written: %v", err)
+	}
+}
+
+func TestConcurrentSaveStateAndUsagePreservesManagementKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	oldKey := KeyConfig{ID: "old", Enabled: true, KeyHash: "old-hash"}
+	newKey := KeyConfig{ID: "new", Enabled: true, KeyHash: "new-hash"}
+	if err := SaveState(path, []KeyConfig{oldKey}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	usage := make(map[string]*UsageState, 4096)
+	for i := 0; i < 4096; i++ {
+		usage["usage-"+itoa(i)] = &UsageState{}
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := SaveUsageOnly(path, usage); err != nil {
+			t.Errorf("SaveUsageOnly: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := SaveState(path, []KeyConfig{newKey}, nil, nil, nil); err != nil {
+			t.Errorf("SaveState: %v", err)
+		}
+	}()
+	close(start)
+	wg.Wait()
+	state, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Keys) != 1 || state.Keys[0].ID != newKey.ID {
+		t.Fatalf("concurrent usage flush replaced management keys: %+v", state.Keys)
+	}
+}
+
+func TestIndependentStoresMergeDifferentKeyUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	hashA, _ := HashKey("cpa_merge_a")
+	hashB, _ := HashKey("cpa_merge_b")
+	cfg := Config{Enabled: true, StateFile: path, Keys: []KeyConfig{
+		{ID: "a", Enabled: true, KeyHash: hashA, Models: []ModelRule{{Alias: "base", Provider: "openai", TargetModel: "m"}}},
+		{ID: "b", Enabled: true, KeyHash: hashB, Models: []ModelRule{{Alias: "base", Provider: "openai", TargetModel: "m"}}},
+	}}
+	first := NewStore()
+	if err := first.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	second := NewStore()
+	if err := second.Configure(Config{Enabled: true, StateFile: path}); err != nil {
+		t.Fatal(err)
+	}
+	a := first.findByID("a")
+	a.Name = "updated-a"
+	if err := first.UpsertKey(*a, true); err != nil {
+		t.Fatal(err)
+	}
+	b := second.findByID("b")
+	b.Name = "updated-b"
+	if err := second.UpsertKey(*b, true); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]string{}
+	for _, key := range state.Keys {
+		names[key.ID] = key.Name
+	}
+	if names["a"] != "updated-a" || names["b"] != "updated-b" {
+		t.Fatalf("transactional key merge lost an update: %+v", names)
+	}
+}
+
+func TestRefreshFromDiskMakesIndependentStoreSeeManagementChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	hash, err := HashKey("cpa_refresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Enabled: true, StateFile: path, Keys: []KeyConfig{{
+		ID: "shared", Enabled: true, KeyHash: hash, Models: []ModelRule{{Alias: "base", Provider: "openai", TargetModel: "m"}},
+	}}}
+	writer := NewStore()
+	if err := writer.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewStore()
+	if err := reader.Configure(Config{Enabled: true, StateFile: path}); err != nil {
+		t.Fatal(err)
+	}
+	updated := writer.Keys()[0]
+	updated.Name = "updated-on-disk"
+	if err := writer.UpsertKey(updated, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.RefreshFromDisk(); err != nil {
+		t.Fatal(err)
+	}
+	got := reader.findByID("shared")
+	if got == nil || got.Name != "updated-on-disk" {
+		t.Fatalf("independent store did not refresh management state: %+v", got)
 	}
 }
 

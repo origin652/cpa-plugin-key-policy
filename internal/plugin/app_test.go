@@ -312,6 +312,34 @@ func TestAppPatchKeySetsLimits(t *testing.T) {
 	}
 }
 
+func TestAppPatchAliasesDoesNotReconcileAgainstStaleDerivedModels(t *testing.T) {
+	app, _ := configureTestApp(t)
+	if err := app.store.UpsertAlias(policy.AliasMapping{
+		Alias: "spark", Targets: []policy.AliasTarget{{Provider: "codex", TargetModel: "gpt-spark"}}, Dispatch: "priority",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	patchBody, _ := json.Marshal(map[string]any{
+		"id": "team-a", "aliases": []map[string]any{{"alias": "fast"}, {"alias": "spark"}},
+	})
+	req, _ := json.Marshal(ManagementRequest{Method: http.MethodPatch, Path: "/v0/management/plugins/cpa-key-policy/keys", Body: patchBody})
+	raw, err := app.HandleMethod(MethodManagementHandle, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := managementResponseFromEnvelope(t, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, resp.Body)
+	}
+	state, err := policy.LoadState(app.store.StatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Keys) != 1 || len(state.Keys[0].Aliases) != 2 || state.Keys[0].Aliases[1].Alias != "spark" {
+		t.Fatalf("patched aliases were reconciled back to stale models: %+v", state.Keys)
+	}
+}
+
 func TestManagementRegistrationDeclaresResource(t *testing.T) {
 	app := NewApp()
 	resp := app.managementRegistration()

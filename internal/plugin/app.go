@@ -126,6 +126,10 @@ func (a *App) registration() Registration {
 }
 
 func (a *App) authenticate(raw []byte) ([]byte, error) {
+	// Keep independently loaded auth instances in sync with management changes.
+	if err := a.store.RefreshFromDisk(); err != nil {
+		return nil, err
+	}
 	var req FrontendAuthRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
@@ -519,6 +523,11 @@ func (a *App) handleManagement(raw []byte) ([]byte, error) {
 	}
 
 	base := "/v0/management/plugins/" + PluginID
+	if strings.HasPrefix(path, base) {
+		if err := a.store.RefreshFromDisk(); err != nil {
+			return OKEnvelope(jsonError(http.StatusInternalServerError, "state_refresh_failed", err.Error()))
+		}
+	}
 	switch {
 	case req.Method == http.MethodGet && path == base+"/keys":
 		return OKEnvelope(jsonResponse(http.StatusOK, map[string]any{"keys": a.publicKeys(a.store.Keys())}))
@@ -577,6 +586,7 @@ type publicKey struct {
 	Name                string               `json:"name"`
 	Enabled             bool                 `json:"enabled"`
 	KeyPreview          string               `json:"key_preview"`
+	PlainKey            string               `json:"plain_key,omitempty"`
 	RPM                 int                  `json:"rpm"`
 	Models              []policy.ModelRule   `json:"models"`
 	Aliases             []policy.KeyAliasRef `json:"aliases"`
@@ -629,6 +639,7 @@ func (a *App) createKey(body []byte) ManagementResponse {
 		Enabled:             enabled,
 		KeyHash:             hash,
 		KeyPreview:          policy.PreviewKey(plain),
+		PlainKey:            plain,
 		RPM:                 rpm,
 		Models:              req.Models,
 		Aliases:             req.Aliases,
@@ -691,6 +702,9 @@ func (a *App) patchKey(body []byte) ManagementResponse {
 	}
 	if req.Aliases != nil {
 		current.Aliases = req.Aliases
+		// Models is derived from aliases. Keeping the old derived slice here
+		// makes normalizeConfig reconcile the new aliases back to the old list.
+		current.Models = nil
 	}
 	if strings.TrimSpace(req.Key) != "" {
 		hash, err := policy.HashKey(req.Key)
@@ -699,6 +713,7 @@ func (a *App) patchKey(body []byte) ManagementResponse {
 		}
 		current.KeyHash = hash
 		current.KeyPreview = policy.PreviewKey(req.Key)
+		current.PlainKey = strings.TrimSpace(req.Key)
 	}
 	if err := a.store.UpsertKey(*current, true); err != nil {
 		return jsonError(http.StatusBadRequest, "invalid_policy", err.Error())
@@ -795,6 +810,7 @@ func (a *App) publicKeyFromConfig(key policy.KeyConfig) publicKey {
 		Name:       key.Name,
 		Enabled:    key.Enabled,
 		KeyPreview: key.KeyPreview,
+		PlainKey:   key.PlainKey,
 		RPM:        key.RPM,
 		// Ensure models/aliases always serialize as [] (never null). A nil slice
 		// would marshal to JSON null, which the UI accesses as .length and
