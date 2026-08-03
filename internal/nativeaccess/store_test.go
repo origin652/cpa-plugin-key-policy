@@ -100,3 +100,38 @@ func TestBulkApplyIsAtomic(t *testing.T) {
 		t.Fatal("validated replacement should persist exactly one policy")
 	}
 }
+
+func TestWildcardGrantsAndProviderConstraint(t *testing.T) {
+	dir := t.TempDir()
+	keysFile := filepath.Join(dir, "config.yaml")
+	const key = "sk-wildcard"
+	if err := os.WriteFile(keysFile, []byte("api-keys:\n  - "+key+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(keysFile, filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(Policy{
+		KeyHash: HashKey(key),
+		Enabled: true,
+		Grants: []Grant{
+			{Provider: "kimi", Model: "*"},
+			{Provider: "codex", Model: "gpt-5.6-*"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Authenticate(key, "gpt-5.6-sol", false); !got.Allowed || got.Provider != "codex" {
+		t.Fatalf("expected codex wildcard grant, got %#v", got)
+	}
+	if provider, ok := store.RouteProvider(key, "gpt-5.6-sol"); !ok || provider != "codex" {
+		t.Fatalf("expected provider constraint codex, got %q %v", provider, ok)
+	}
+	if got := store.Authenticate(key, "kimi-k2.5", false); !got.Allowed || got.Provider != "kimi" {
+		t.Fatalf("expected kimi all-model grant, got %#v", got)
+	}
+	if got := store.Authenticate(key, "deepseek-v4", false); got.Allowed {
+		t.Fatalf("unexpected wildcard overreach: %#v", got)
+	}
+}

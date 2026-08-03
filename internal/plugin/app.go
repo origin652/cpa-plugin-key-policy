@@ -118,7 +118,7 @@ func (a *App) registration() Registration {
 	capabilities := Capabilities{
 		FrontendAuthProvider:          true,
 		FrontendAuthProviderExclusive: a.nativeMode,
-		ModelRouter:                   !a.nativeMode,
+		ModelRouter:                   true,
 		Scheduler:                     !a.nativeMode,
 		ResponseInterceptor:           !a.nativeMode,
 		UsagePlugin:                   true,
@@ -210,6 +210,20 @@ func (a *App) routeModel(raw []byte) ([]byte, error) {
 	var req ModelRouteRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
+	}
+	if a.nativeMode {
+		rawKey := policy.ExtractAPIKey(req.Headers, req.Query)
+		provider, authorized := a.native.RouteProvider(rawKey, req.RequestedModel)
+		if !authorized || provider == "*" {
+			return OKEnvelope(ModelRouteResponse{Handled: false})
+		}
+		return OKEnvelope(ModelRouteResponse{
+			Handled:     true,
+			TargetKind:  "provider",
+			Target:      resolveProviderKey(provider, req.AvailableProviders),
+			TargetModel: req.RequestedModel,
+			Reason:      "cpa-key-policy:native-provider-constraint",
+		})
 	}
 	rule, keyID, ok := a.store.Route(req.Headers, req.Query, req.RequestedModel)
 	if !ok {

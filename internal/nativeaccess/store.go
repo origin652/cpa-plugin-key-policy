@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -166,6 +167,35 @@ func normalizePolicy(input Policy) (Policy, error) {
 	})
 	input.Grants = grants
 	return input, nil
+}
+
+func wildcardMatch(pattern, value string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	value = strings.ToLower(strings.TrimSpace(value))
+	if pattern == "*" {
+		return true
+	}
+	expression := "^" + strings.ReplaceAll(
+		strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, ".*"),
+		`\?`,
+		".",
+	) + "$"
+	matched, err := regexp.MatchString(expression, value)
+	return err == nil && matched
+}
+
+func grantScore(grant Grant, model string) int {
+	if !wildcardMatch(grant.Model, model) {
+		return -1
+	}
+	score := 0
+	if grant.Provider != "*" {
+		score += 2
+	}
+	if !strings.ContainsAny(grant.Model, "*?") {
+		score += 1
+	}
+	return score
 }
 
 func (s *Store) refreshKeysLocked(force bool) error {
@@ -376,10 +406,11 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 		decision.Reason = "models_endpoint_allowed"
 		return decision
 	}
+	bestScore := -1
 	for _, grant := range policy.Grants {
-		if strings.EqualFold(grant.Model, model) {
+		if score := grantScore(grant, model); score > bestScore {
 			decision.Provider = grant.Provider
-			break
+			bestScore = score
 		}
 	}
 	if decision.Provider == "" {
@@ -429,6 +460,35 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 	decision.Allowed = true
 	decision.Reason = "allowed"
 	return decision
+}
+
+// RouteProvider returns the provider constraint for an already-authorized
+// request. The requested model is never renamed. "*" means CPA may keep its
+// native provider selection; a concrete provider must be selected by the host
+// model router so another provider cannot satisfy the same model name.
+func (s *Store) RouteProvider(rawKey, model string) (string, bool) {
+	if err := s.refreshKeys(); err != nil {
+		return "", false
+	}
+	hash := HashKey(rawKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, active := s.activeByHash[hash]; !active {
+		return "", false
+	}
+	policy, exists := s.policiesByHash[hash]
+	if !exists || !policy.Enabled {
+		return "", false
+	}
+	bestProvider := ""
+	bestScore := -1
+	for _, grant := range policy.Grants {
+		if score := grantScore(grant, model); score > bestScore {
+			bestProvider = grant.Provider
+			bestScore = score
+		}
+	}
+	return bestProvider, bestScore >= 0
 }
 
 func (s *Store) RecordUsage(rawKey string, tokens int64) {
