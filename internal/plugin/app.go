@@ -540,6 +540,7 @@ func (a *App) managementRegistration() ManagementRegistrationResponse {
 				{Method: http.MethodGet, Path: base + "/identities", Description: "List active CPA native keys by hash and policy status."},
 				{Method: http.MethodGet, Path: base + "/policies", Description: "List native-key access policies."},
 				{Method: http.MethodPut, Path: base + "/policies", Description: "Create or replace authorization and quota policy for an active native key."},
+				{Method: http.MethodPut, Path: base + "/policies/bulk", Description: "Atomically validate and merge or replace multiple native-key policies."},
 				{Method: http.MethodDelete, Path: base + "/policies", Description: "Delete policy by key_hash without changing the native CPA key."},
 				{Method: http.MethodGet, Path: base + "/status", Description: "Show native access-policy runtime status."},
 			},
@@ -606,6 +607,31 @@ func (a *App) handleManagement(raw []byte) ([]byte, error) {
 				return OKEnvelope(jsonError(http.StatusBadRequest, "invalid_policy", err.Error()))
 			}
 			return OKEnvelope(jsonResponse(http.StatusOK, map[string]any{"policy": input}))
+		case req.Method == http.MethodPut && path == base+"/policies/bulk":
+			var input struct {
+				Policies []nativeaccess.Policy `json:"policies"`
+				Mode     string                `json:"mode"`
+				DryRun   bool                  `json:"dry_run"`
+			}
+			if err := json.Unmarshal(req.Body, &input); err != nil {
+				return OKEnvelope(jsonError(http.StatusBadRequest, "invalid_json", err.Error()))
+			}
+			mode := strings.ToLower(strings.TrimSpace(input.Mode))
+			if mode == "" {
+				mode = "merge"
+			}
+			if mode != "merge" && mode != "replace" {
+				return OKEnvelope(jsonError(http.StatusBadRequest, "invalid_mode", "mode must be merge or replace"))
+			}
+			policies, err := a.native.Apply(input.Policies, mode == "replace", input.DryRun)
+			if err != nil {
+				return OKEnvelope(jsonError(http.StatusBadRequest, "invalid_policy_set", err.Error()))
+			}
+			return OKEnvelope(jsonResponse(http.StatusOK, map[string]any{
+				"policies": policies,
+				"mode":     mode,
+				"dry_run":  input.DryRun,
+			}))
 		case req.Method == http.MethodDelete && path == base+"/policies":
 			hash := ""
 			if values := req.Query["key_hash"]; len(values) > 0 {

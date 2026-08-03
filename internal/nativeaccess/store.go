@@ -272,20 +272,62 @@ func (s *Store) Policies() []Policy {
 }
 
 func (s *Store) Upsert(input Policy) error {
-	policy, err := normalizePolicy(input)
-	if err != nil {
-		return err
+	_, err := s.Apply([]Policy{input}, false, false)
+	return err
+}
+
+// Apply validates the complete input before changing state. It is the common
+// write path for both the CPAMP UI and declarative/AI automation.
+//
+// replace=false merges the supplied policies into existing state.
+// replace=true makes the supplied list the complete desired policy set.
+// dryRun=true performs all validation but does not mutate or persist anything.
+func (s *Store) Apply(inputs []Policy, replace, dryRun bool) ([]Policy, error) {
+	normalized := make([]Policy, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		policy, err := normalizePolicy(input)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[policy.KeyHash]; duplicate {
+			return nil, fmt.Errorf("duplicate policy for %s", policy.KeyHash)
+		}
+		seen[policy.KeyHash] = struct{}{}
+		normalized = append(normalized, policy)
 	}
 	if err := s.refreshKeys(); err != nil {
-		return err
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, active := s.activeByHash[policy.KeyHash]; !active {
-		return errors.New("key_hash is not an active CPA api-key")
+	for _, policy := range normalized {
+		if _, active := s.activeByHash[policy.KeyHash]; !active {
+			return nil, fmt.Errorf("%s is not an active CPA api-key", policy.KeyHash)
+		}
 	}
-	s.policiesByHash[policy.KeyHash] = policy
-	return s.saveLocked()
+	if dryRun {
+		return normalized, nil
+	}
+	next := s.policiesByHash
+	if replace {
+		next = make(map[string]Policy, len(normalized))
+	} else {
+		next = make(map[string]Policy, len(s.policiesByHash)+len(normalized))
+		for hash, policy := range s.policiesByHash {
+			next[hash] = policy
+		}
+	}
+	for _, policy := range normalized {
+		next[policy.KeyHash] = policy
+	}
+	previous := s.policiesByHash
+	s.policiesByHash = next
+	if err := s.saveLocked(); err != nil {
+		s.policiesByHash = previous
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func (s *Store) Delete(hash string) error {

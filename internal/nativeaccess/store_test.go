@@ -59,3 +59,44 @@ func TestPolicyCannotCreateAKey(t *testing.T) {
 		t.Fatal("policy must not create or authorize a non-native key")
 	}
 }
+
+func TestBulkApplyIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	keysFile := filepath.Join(dir, "config.yaml")
+	const active = "sk-active"
+	if err := os.WriteFile(keysFile, []byte("api-keys:\n  - "+active+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(keysFile, filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := Policy{
+		KeyHash: HashKey(active),
+		Enabled: true,
+		Grants:  []Grant{{Provider: "codex", Model: "gpt-5.6-sol"}},
+	}
+	invalid := Policy{
+		KeyHash: HashKey("not-active"),
+		Enabled: true,
+		Grants:  []Grant{{Provider: "kimi", Model: "kimi-k2.5"}},
+	}
+	if _, err := store.Apply([]Policy{valid, invalid}, true, false); err == nil {
+		t.Fatal("expected the complete transaction to fail")
+	}
+	if len(store.Policies()) != 0 {
+		t.Fatal("failed bulk validation must not partially persist policies")
+	}
+	if _, err := store.Apply([]Policy{valid}, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.Policies()) != 0 {
+		t.Fatal("dry run must not mutate policies")
+	}
+	if _, err := store.Apply([]Policy{valid}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.Policies()) != 1 {
+		t.Fatal("validated replacement should persist exactly one policy")
+	}
+}
