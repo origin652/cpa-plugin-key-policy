@@ -9,6 +9,7 @@
 .go-appdata/
 .go-localappdata/
 cpa-key-policy-state.json
+cpa-key-policy-state.json.usage
 coverage.out
 
 # CPA reference checkout used for research, not part of this project

@@ -21,7 +21,7 @@ func TestNativeKeyIsSingleIdentitySource(t *testing.T) {
 	policy := Policy{
 		KeyHash: HashKey(key),
 		Enabled: true,
-		Grants: []Grant{{Provider: "codex", Model: "codex-csil-gpt-5.6-sol"}},
+		Grants:  []Grant{{Provider: "codex", Model: "codex-csil-gpt-5.6-sol"}},
 	}
 	if err := store.Upsert(policy); err != nil {
 		t.Fatal(err)
@@ -142,6 +142,90 @@ func TestWildcardGrantsAndProviderConstraint(t *testing.T) {
 	})
 	if !handled || len(models) != 2 {
 		t.Fatalf("expected two visible models, handled=%v models=%#v", handled, models)
+	}
+}
+
+func TestCompatibilityPrefixRoutesToNativeUpstreamPrefix(t *testing.T) {
+	dir := t.TempDir()
+	keysFile := filepath.Join(dir, "config.yaml")
+	const key = "sk-csil-existing"
+	if err := os.WriteFile(keysFile, []byte("api-keys:\n  - "+key+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(keysFile, filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(Policy{
+		KeyHash: HashKey(key),
+		Enabled: true,
+		Grants: []Grant{{
+			Provider:         "codex",
+			Model:            "gpt-5.6-*",
+			Group:            "classify:csil",
+			UpstreamPrefix:   "codex-csil",
+			AcceptedPrefixes: []string{"codex-csil-"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, requested := range []string{"gpt-5.6-sol", "codex-csil-gpt-5.6-sol"} {
+		got := store.Authenticate(key, requested, false)
+		if !got.Allowed || got.Provider != "codex" || got.Model != "gpt-5.6-sol" ||
+			got.TargetModel != "codex-csil/gpt-5.6-sol" || got.Group != "classify:csil" {
+			t.Fatalf("unexpected decision for %q: %#v", requested, got)
+		}
+		route, ok := store.Route(key, requested)
+		if !ok || route.TargetModel != "codex-csil/gpt-5.6-sol" || route.Group != "classify:csil" {
+			t.Fatalf("unexpected route for %q: %#v %v", requested, route, ok)
+		}
+	}
+	if got := store.Authenticate(key, "codex-csil-gpt-5.7-sol", false); got.Allowed {
+		t.Fatalf("compatibility prefix must not broaden the model grant: %#v", got)
+	}
+
+	models, handled := store.FilterModels(key, []map[string]any{
+		{"id": "gpt-5.6-sol", "owned_by": "codex"},
+		{"id": "codex-csil/gpt-5.6-sol", "owned_by": "codex"},
+		{"id": "codex-csil/gpt-5.7-sol", "owned_by": "codex"},
+	}, map[string][]string{
+		"gpt-5.6-sol":            {"codex"},
+		"codex-csil/gpt-5.6-sol": {"codex"},
+		"codex-csil/gpt-5.7-sol": {"codex"},
+	})
+	if !handled || len(models) != 2 ||
+		models[0]["id"] != "gpt-5.6-sol" ||
+		models[1]["id"] != "codex-csil-gpt-5.6-sol" {
+		t.Fatalf("expected canonical and legacy catalog names, got %#v", models)
+	}
+}
+
+func TestExactLegacyAliasRoutesToCanonicalModel(t *testing.T) {
+	dir := t.TempDir()
+	keysFile := filepath.Join(dir, "config.yaml")
+	const key = "sk-existing-alias"
+	if err := os.WriteFile(keysFile, []byte("api-keys:\n  - "+key+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(keysFile, filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(Policy{
+		KeyHash: HashKey(key),
+		Enabled: true,
+		Grants: []Grant{{
+			Provider:       "deepseek-personal",
+			Model:          "deepseek-v4-pro",
+			AcceptedModels: []string{"deepseek-personal-deepseek-v4-pro"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := store.Authenticate(key, "deepseek-personal-deepseek-v4-pro", false)
+	if !got.Allowed || got.Model != "deepseek-v4-pro" || got.TargetModel != "deepseek-v4-pro" {
+		t.Fatalf("legacy exact alias did not normalize: %#v", got)
 	}
 }
 

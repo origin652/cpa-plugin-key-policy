@@ -20,8 +20,12 @@ import (
 const hashPrefix = "sha256:"
 
 type Grant struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model"`
+	Group            string   `json:"group,omitempty"`
+	UpstreamPrefix   string   `json:"upstream_prefix,omitempty"`
+	AcceptedPrefixes []string `json:"accepted_prefixes,omitempty"`
+	AcceptedModels   []string `json:"accepted_models,omitempty"`
 }
 
 type Policy struct {
@@ -59,12 +63,14 @@ type Identity struct {
 }
 
 type Decision struct {
-	Known     bool
-	Allowed   bool
-	Principal string
-	Provider  string
-	Model     string
-	Reason    string
+	Known       bool
+	Allowed     bool
+	Principal   string
+	Provider    string
+	Model       string
+	TargetModel string
+	Group       string
+	Reason      string
 }
 
 type nativeConfig struct {
@@ -154,10 +160,53 @@ func normalizePolicy(input Policy) (Policy, error) {
 	for _, grant := range input.Grants {
 		grant.Provider = strings.ToLower(strings.TrimSpace(grant.Provider))
 		grant.Model = strings.TrimSpace(grant.Model)
+		grant.Group = strings.TrimSpace(grant.Group)
+		grant.UpstreamPrefix = strings.Trim(strings.TrimSpace(grant.UpstreamPrefix), "/")
+		prefixes := make([]string, 0, len(grant.AcceptedPrefixes))
+		prefixSeen := make(map[string]struct{}, len(grant.AcceptedPrefixes))
+		for _, prefix := range grant.AcceptedPrefixes {
+			prefix = strings.TrimSpace(prefix)
+			if prefix == "" || strings.Contains(prefix, "/") {
+				return Policy{}, errors.New("accepted_prefixes must be non-empty client prefixes without '/'")
+			}
+			lower := strings.ToLower(prefix)
+			if _, exists := prefixSeen[lower]; exists {
+				continue
+			}
+			prefixSeen[lower] = struct{}{}
+			prefixes = append(prefixes, prefix)
+		}
+		sort.Strings(prefixes)
+		grant.AcceptedPrefixes = prefixes
+		models := make([]string, 0, len(grant.AcceptedModels))
+		modelSeen := make(map[string]struct{}, len(grant.AcceptedModels))
+		for _, acceptedModel := range grant.AcceptedModels {
+			acceptedModel = strings.TrimSpace(acceptedModel)
+			if acceptedModel == "" || strings.ContainsAny(acceptedModel, "*?") {
+				return Policy{}, errors.New("accepted_models must contain exact non-empty model names")
+			}
+			lower := strings.ToLower(acceptedModel)
+			if _, exists := modelSeen[lower]; exists {
+				continue
+			}
+			modelSeen[lower] = struct{}{}
+			models = append(models, acceptedModel)
+		}
+		sort.Strings(models)
+		grant.AcceptedModels = models
+		if len(grant.AcceptedModels) > 0 && strings.ContainsAny(grant.Model, "*?") {
+			return Policy{}, errors.New("accepted_models require an exact canonical model")
+		}
 		if grant.Provider == "" || grant.Model == "" {
 			return Policy{}, errors.New("each grant requires provider and model")
 		}
-		id := grant.Provider + "\x00" + strings.ToLower(grant.Model)
+		if grant.Provider == "*" && (grant.Group != "" || grant.UpstreamPrefix != "") {
+			return Policy{}, errors.New("group and upstream_prefix require a concrete provider")
+		}
+		id := grant.Provider + "\x00" + strings.ToLower(grant.Model) + "\x00" +
+			strings.ToLower(grant.Group) + "\x00" + strings.ToLower(grant.UpstreamPrefix) +
+			"\x00" + strings.ToLower(strings.Join(grant.AcceptedPrefixes, "\x01")) +
+			"\x00" + strings.ToLower(strings.Join(grant.AcceptedModels, "\x01"))
 		if _, exists := seen[id]; exists {
 			continue
 		}
@@ -189,18 +238,65 @@ func wildcardMatch(pattern, value string) bool {
 	return err == nil && matched
 }
 
-func grantScore(grant Grant, model string) int {
-	if !wildcardMatch(grant.Model, model) {
-		return -1
+func matchGrant(grant Grant, requestedModel string) (canonicalModel string, score int, ok bool) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	canonicalModel = requestedModel
+	compatibilityMatch := false
+	if !wildcardMatch(grant.Model, canonicalModel) {
+		canonicalModel = ""
+		for _, acceptedModel := range grant.AcceptedModels {
+			if strings.EqualFold(requestedModel, acceptedModel) {
+				canonicalModel = grant.Model
+				compatibilityMatch = true
+				break
+			}
+		}
+		for _, prefix := range grant.AcceptedPrefixes {
+			if canonicalModel != "" {
+				break
+			}
+			if len(requestedModel) <= len(prefix) || !strings.EqualFold(requestedModel[:len(prefix)], prefix) {
+				continue
+			}
+			candidate := requestedModel[len(prefix):]
+			if wildcardMatch(grant.Model, candidate) {
+				canonicalModel = candidate
+				compatibilityMatch = true
+				break
+			}
+		}
+		if canonicalModel == "" {
+			return "", -1, false
+		}
 	}
-	score := 0
+	score = 0
 	if grant.Provider != "*" {
 		score += 2
 	}
 	if !strings.ContainsAny(grant.Model, "*?") {
 		score += 1
 	}
+	// Prefer the canonical unprefixed spelling when two otherwise equivalent
+	// grants overlap. Compatibility names remain accepted during migration.
+	if !compatibilityMatch {
+		score++
+	}
+	return canonicalModel, score, true
+}
+
+func grantScore(grant Grant, model string) int {
+	_, score, ok := matchGrant(grant, model)
+	if !ok {
+		return -1
+	}
 	return score
+}
+
+func targetModel(grant Grant, canonicalModel string) string {
+	if grant.UpstreamPrefix == "" {
+		return canonicalModel
+	}
+	return grant.UpstreamPrefix + "/" + canonicalModel
 }
 
 func (s *Store) refreshKeysLocked(force bool) error {
@@ -525,8 +621,12 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 	}
 	bestScore := -1
 	for _, grant := range policy.Grants {
-		if score := grantScore(grant, model); score > bestScore {
+		canonicalModel, score, matched := matchGrant(grant, model)
+		if matched && score > bestScore {
 			decision.Provider = grant.Provider
+			decision.Model = canonicalModel
+			decision.TargetModel = targetModel(grant, canonicalModel)
+			decision.Group = grant.Group
 			bestScore = score
 		}
 	}
@@ -580,36 +680,47 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 	return decision
 }
 
-// RouteProvider returns the provider constraint for an already-authorized
-// request. The requested model is never renamed. "*" means CPA may keep its
-// native provider selection; a concrete provider must be selected by the host
-// model router so another provider cannot satisfy the same model name.
-func (s *Store) RouteProvider(rawKey, model string) (string, bool) {
+// Route returns the provider, canonical model, upstream-prefixed model, and
+// optional credential group for an already-authorized request. Compatibility
+// client prefixes are stripped before matching; UpstreamPrefix is then applied
+// using CPA's native "prefix/model" syntax.
+func (s *Store) Route(rawKey, model string) (Decision, bool) {
 	if err := s.refreshKeys(); err != nil {
-		return "", false
+		return Decision{}, false
 	}
 	if err := s.refreshState(); err != nil {
-		return "", false
+		return Decision{}, false
 	}
 	hash := HashKey(rawKey)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, active := s.activeByHash[hash]; !active {
-		return "", false
+		return Decision{}, false
 	}
 	policy, exists := s.policiesByHash[hash]
 	if !exists || !policy.Enabled {
-		return "", false
+		return Decision{}, false
 	}
-	bestProvider := ""
+	decision := Decision{Known: true, Principal: hash}
 	bestScore := -1
 	for _, grant := range policy.Grants {
-		if score := grantScore(grant, model); score > bestScore {
-			bestProvider = grant.Provider
+		canonicalModel, score, matched := matchGrant(grant, model)
+		if matched && score > bestScore {
+			decision.Provider = grant.Provider
+			decision.Model = canonicalModel
+			decision.TargetModel = targetModel(grant, canonicalModel)
+			decision.Group = grant.Group
 			bestScore = score
 		}
 	}
-	return bestProvider, bestScore >= 0
+	decision.Allowed = bestScore >= 0
+	return decision, decision.Allowed
+}
+
+// RouteProvider is retained for API compatibility with earlier V2 callers.
+func (s *Store) RouteProvider(rawKey, model string) (string, bool) {
+	decision, ok := s.Route(rawKey, model)
+	return decision.Provider, ok
 }
 
 // FilterModels returns only model entries matched by at least one grant for
@@ -633,17 +744,48 @@ func (s *Store) FilterModels(rawKey string, models []map[string]any, modelProvid
 		return []map[string]any{}, true
 	}
 	filtered := make([]map[string]any, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	appendModel := func(source map[string]any, id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		clone := make(map[string]any, len(source))
+		for field, value := range source {
+			clone[field] = value
+		}
+		clone["id"] = id
+		filtered = append(filtered, clone)
+	}
 	for _, model := range models {
 		id, _ := model["id"].(string)
-		allowed := false
 		for _, grant := range policy.Grants {
-			if grantScore(grant, id) >= 0 && providerMatches(grant.Provider, modelProviders[id]) {
-				allowed = true
-				break
+			if !providerMatches(grant.Provider, modelProviders[id]) {
+				continue
 			}
-		}
-		if allowed {
-			filtered = append(filtered, model)
+			canonicalID := id
+			if grant.UpstreamPrefix != "" {
+				nativePrefix := grant.UpstreamPrefix + "/"
+				if len(id) <= len(nativePrefix) || !strings.EqualFold(id[:len(nativePrefix)], nativePrefix) {
+					continue
+				}
+				canonicalID = id[len(nativePrefix):]
+			}
+			if !wildcardMatch(grant.Model, canonicalID) {
+				continue
+			}
+			appendModel(model, canonicalID)
+			for _, acceptedModel := range grant.AcceptedModels {
+				appendModel(model, acceptedModel)
+			}
+			for _, prefix := range grant.AcceptedPrefixes {
+				appendModel(model, prefix+canonicalID)
+			}
 		}
 	}
 	return filtered, true

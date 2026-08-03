@@ -15,11 +15,12 @@ import (
 )
 
 type App struct {
-	store         *policy.Store
-	native        *nativeaccess.Store
-	nativeMode    bool
-	classifyMu    sync.RWMutex
-	classifyCache map[string][]string
+	store               *policy.Store
+	native              *nativeaccess.Store
+	nativeMode          bool
+	classifyMu          sync.RWMutex
+	classifyCache       map[string][]string
+	nativeClassifyRules []policy.ClassifyRule
 }
 
 const classifyCacheCapacity = 4096
@@ -95,10 +96,17 @@ func (a *App) configure(raw []byte) error {
 		}
 		a.native = native
 		a.nativeMode = true
+		a.classifyMu.Lock()
+		a.nativeClassifyRules = append([]policy.ClassifyRule(nil), cfg.ClassifyRules...)
+		a.classifyCache = make(map[string][]string)
+		a.classifyMu.Unlock()
 		return nil
 	}
 	a.native = nil
 	a.nativeMode = false
+	a.classifyMu.Lock()
+	a.nativeClassifyRules = nil
+	a.classifyMu.Unlock()
 	if err := a.store.Configure(cfg); err != nil {
 		return err
 	}
@@ -125,7 +133,7 @@ func (a *App) registration() Registration {
 		FrontendAuthProviderExclusive: a.nativeMode,
 		ModelRouter:                   true,
 		ModelCatalogFilter:            a.nativeMode,
-		Scheduler:                     !a.nativeMode,
+		Scheduler:                     true,
 		ResponseInterceptor:           !a.nativeMode,
 		UsagePlugin:                   true,
 		ManagementAPI:                 true,
@@ -184,6 +192,9 @@ func (a *App) authenticate(raw []byte) ([]byte, error) {
 		if decision.Provider != "" {
 			metadata["authorized_provider"] = decision.Provider
 		}
+		if decision.Group != "" {
+			metadata["group"] = decision.Group
+		}
 		return OKEnvelope(FrontendAuthResponse{
 			Authenticated: true,
 			Principal:     decision.Principal,
@@ -232,16 +243,16 @@ func (a *App) routeModel(raw []byte) ([]byte, error) {
 	}
 	if a.nativeMode {
 		rawKey := policy.ExtractAPIKey(req.Headers, req.Query)
-		provider, authorized := a.native.RouteProvider(rawKey, req.RequestedModel)
-		if !authorized || provider == "*" {
+		decision, authorized := a.native.Route(rawKey, req.RequestedModel)
+		if !authorized || decision.Provider == "*" {
 			return OKEnvelope(ModelRouteResponse{Handled: false})
 		}
 		return OKEnvelope(ModelRouteResponse{
 			Handled:     true,
 			TargetKind:  "provider",
-			Target:      resolveProviderKey(provider, req.AvailableProviders),
-			TargetModel: req.RequestedModel,
-			Reason:      "cpa-key-policy:native-provider-constraint",
+			Target:      resolveProviderKey(decision.Provider, req.AvailableProviders),
+			TargetModel: decision.TargetModel,
+			Reason:      "cpa-key-policy:native-provider-and-prefix-constraint",
 		})
 	}
 	rule, keyID, ok := a.store.Route(req.Headers, req.Query, req.RequestedModel)
@@ -427,7 +438,7 @@ func (a *App) candidateGroups(cand SchedulerAuthCandidate) []string {
 	// 1. Evaluate custom classify rules (multi-group: collect all matches).
 	// Group names are stored bare on the rule but stamped/matched with the
 	// classify: prefix so they never collide with built-in plan_type values.
-	for _, rule := range a.store.ClassifyRulesSnapshot() {
+	for _, rule := range a.classifyRulesSnapshot() {
 		if !rule.Enabled || rule.Compiled() == nil {
 			continue
 		}
@@ -453,6 +464,15 @@ func (a *App) candidateGroups(cand SchedulerAuthCandidate) []string {
 	a.classifyCache[cacheKey] = groups
 	a.classifyMu.Unlock()
 	return groups
+}
+
+func (a *App) classifyRulesSnapshot() []policy.ClassifyRule {
+	if !a.nativeMode {
+		return a.store.ClassifyRulesSnapshot()
+	}
+	a.classifyMu.RLock()
+	defer a.classifyMu.RUnlock()
+	return append([]policy.ClassifyRule(nil), a.nativeClassifyRules...)
 }
 
 func (a *App) clearClassifyCache() {

@@ -111,6 +111,32 @@ Copy the `.so` into CPA `plugins.dir` and enable the plugin in config.
 
 ## Config
 
+### Native-access mode
+
+`native-access` removes the second key issuer: CPA's existing `api-keys` are the
+only client identities. The plugin stores only key hashes, grants, quotas, and
+usage counters.
+
+During a prefix migration, one grant can accept both the canonical model and
+temporary legacy client prefixes while still using CPA's native credential
+prefix internally:
+
+```json
+{
+  "provider": "codex",
+  "model": "gpt-5.6-*",
+  "group": "classify:csil",
+  "upstream_prefix": "codex-csil",
+  "accepted_prefixes": ["codex-csil-"]
+}
+```
+
+Both `gpt-5.6-sol` and `codex-csil-gpt-5.6-sol` route to
+`codex-csil/gpt-5.6-sol`. The scheduler only accepts credentials classified as
+`csil`; if none are healthy it fails closed instead of falling back to another
+Codex account. Remove `accepted_prefixes` after clients have migrated. The
+native API key does not change.
+
 Minimal shape (see also [`config.example.yaml`](./config.example.yaml)):
 
 ```yaml
@@ -257,4 +283,3 @@ Per-key `allow_models_endpoint`: **binary** — deny (401) or full global list. 
 go test ./...
 cd web && npm test && npm run build
 ```
-
