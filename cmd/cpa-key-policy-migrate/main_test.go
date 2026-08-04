@@ -31,7 +31,26 @@ func TestRunStagesLosslessMigration(t *testing.T) {
 	if err := policy.SaveState(legacyPath, keys, nil, aliases, nil); err != nil {
 		t.Fatal(err)
 	}
-	source := []byte("port: 8317\napi-keys: []\nforce-model-prefix: true\n")
+	source := []byte(`port: 8317
+api-keys: []
+force-model-prefix: true
+plugins:
+  enabled: true
+  configs:
+    cpa-key-policy:
+      enabled: true
+      state_file: /root/.cli-proxy-api/cpa-key-policy-state.json
+      keys:
+        - id: legacy-seed
+      aliases:
+        - alias: legacy-alias
+      classify_rules:
+        - name: csil
+          field: filename
+          pattern: csil
+          group: csil
+          enabled: true
+`)
 	if err := os.WriteFile(configPath, source, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +64,21 @@ func TestRunStagesLosslessMigration(t *testing.T) {
 	staged, _ := os.ReadFile(outputConfig)
 	if !bytes.Contains(staged, []byte("api-keys:\n  - \"")) {
 		t.Fatalf("staged api-keys must use a block sequence")
+	}
+	for _, expected := range []string{
+		"mode: native-access",
+		"native_keys_file: /CLIProxyAPI/config.yaml",
+		"native_state_file: /root/.cli-proxy-api/cpa-key-access-policy-state.json",
+		"classify_rules:",
+	} {
+		if !bytes.Contains(staged, []byte(expected)) {
+			t.Fatalf("staged config is missing %q", expected)
+		}
+	}
+	for _, removed := range []string{"legacy-seed", "legacy-alias"} {
+		if bytes.Contains(staged, []byte(removed)) {
+			t.Fatalf("staged config retained legacy mapping %q", removed)
+		}
 	}
 	store, err := nativeaccess.New(outputConfig, outputPolicy)
 	if err != nil {
@@ -70,7 +104,7 @@ func TestRunRejectsUnmanagedExistingNativeKey(t *testing.T) {
 	}}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("api-keys:\n  - \"sk-unmanaged\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("api-keys:\n  - \"sk-unmanaged\"\nplugins:\n  configs:\n    cpa-key-policy:\n      enabled: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err := run(

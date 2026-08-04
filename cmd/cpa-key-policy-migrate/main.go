@@ -75,6 +75,10 @@ func run(legacyState, sourceConfig, outputConfig, outputPolicy string, force boo
 	if err != nil {
 		return err
 	}
+	stagedConfig, err = enableNativeAccess(stagedConfig)
+	if err != nil {
+		return err
+	}
 	migratedHashes := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		migratedHashes[nativeaccess.HashKey(key)] = struct{}{}
@@ -150,6 +154,79 @@ func replaceAPIKeys(raw []byte, keys []string) ([]byte, []string, error) {
 		return nil, nil, err
 	}
 	return out.Bytes(), existing, encoder.Close()
+}
+
+func enableNativeAccess(raw []byte) ([]byte, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		return nil, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, errors.New("CPA config root must be a mapping")
+	}
+	root := document.Content[0]
+	plugins := mappingValue(root, "plugins")
+	if plugins == nil || plugins.Kind != yaml.MappingNode {
+		return nil, errors.New("CPA config is missing plugins mapping")
+	}
+	configs := mappingValue(plugins, "configs")
+	if configs == nil || configs.Kind != yaml.MappingNode {
+		return nil, errors.New("CPA config is missing plugins.configs mapping")
+	}
+	keyPolicy := mappingValue(configs, "cpa-key-policy")
+	if keyPolicy == nil || keyPolicy.Kind != yaml.MappingNode {
+		return nil, errors.New("CPA config is missing plugins.configs.cpa-key-policy mapping")
+	}
+
+	removeMappingKeys(keyPolicy, "keys", "aliases")
+	setMappingScalar(keyPolicy, "mode", "native-access")
+	setMappingScalar(keyPolicy, "native_keys_file", "/CLIProxyAPI/config.yaml")
+	setMappingScalar(keyPolicy, "native_state_file", "/root/.cli-proxy-api/cpa-key-access-policy-state.json")
+
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&document); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), encoder.Close()
+}
+
+func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1]
+		}
+	}
+	return nil
+}
+
+func setMappingScalar(mapping *yaml.Node, key, value string) {
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			mapping.Content[index+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+			return
+		}
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
+}
+
+func removeMappingKeys(mapping *yaml.Node, keys ...string) {
+	remove := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		remove[key] = struct{}{}
+	}
+	filtered := make([]*yaml.Node, 0, len(mapping.Content))
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if _, found := remove[mapping.Content[index].Value]; found {
+			continue
+		}
+		filtered = append(filtered, mapping.Content[index], mapping.Content[index+1])
+	}
+	mapping.Content = filtered
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
