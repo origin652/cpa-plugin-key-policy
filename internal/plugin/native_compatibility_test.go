@@ -106,7 +106,9 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 		if err := unmarshalOK(rawAuth, &auth); err != nil {
 			t.Fatal(err)
 		}
-		if !auth.Authenticated || auth.Metadata["group"] != "classify:csil" {
+		if !auth.Authenticated || auth.Principal != key ||
+			auth.Metadata["key_hash"] != nativeaccess.HashKey(key) ||
+			auth.Metadata["group"] != "classify:csil" {
 			t.Fatalf("unexpected auth for %q: %#v", requested, auth)
 		}
 

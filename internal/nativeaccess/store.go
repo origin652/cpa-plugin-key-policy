@@ -66,6 +66,7 @@ type Decision struct {
 	Known       bool
 	Allowed     bool
 	Principal   string
+	KeyHash     string
 	Provider    string
 	Model       string
 	TargetModel string
@@ -736,7 +737,12 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 	if _, active := s.activeByHash[hash]; !active {
 		return Decision{Reason: "unknown_native_key"}
 	}
-	decision := Decision{Known: true, Principal: hash, Model: model}
+	decision := Decision{
+		Known:     true,
+		Principal: strings.TrimSpace(rawKey),
+		KeyHash:   hash,
+		Model:     model,
+	}
 	policy, exists := s.policiesByHash[hash]
 	if !exists {
 		decision.Reason = "policy_missing"
@@ -830,7 +836,8 @@ func (s *Store) Route(rawKey, model string) (Decision, bool) {
 	}
 	decision := routeDecision(policy, model)
 	decision.Known = true
-	decision.Principal = hash
+	decision.Principal = strings.TrimSpace(rawKey)
+	decision.KeyHash = hash
 	return decision, decision.Allowed
 }
 

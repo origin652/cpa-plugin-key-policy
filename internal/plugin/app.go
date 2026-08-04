@@ -186,7 +186,7 @@ func (a *App) authenticate(raw []byte) ([]byte, error) {
 		}
 		metadata := map[string]string{
 			"provider":        PluginID,
-			"key_hash":        decision.Principal,
+			"key_hash":        decision.KeyHash,
 			"requested_model": decision.Model,
 		}
 		if decision.Provider != "" {
