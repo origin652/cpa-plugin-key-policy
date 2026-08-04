@@ -275,12 +275,9 @@ func matchGrant(grant Grant, requestedModel string) (canonicalModel string, scor
 			return "", -1, false
 		}
 	}
-	score = 0
+	score = modelPatternSpecificity(grant.Model)
 	if grant.Provider != "*" {
 		score += 2
-	}
-	if !strings.ContainsAny(grant.Model, "*?") {
-		score += 1
 	}
 	// Prefer the canonical unprefixed spelling when two otherwise equivalent
 	// grants overlap. Compatibility names remain accepted during migration.
@@ -288,6 +285,15 @@ func matchGrant(grant Grant, requestedModel string) (canonicalModel string, scor
 		score++
 	}
 	return canonicalModel, score, true
+}
+
+func modelPatternSpecificity(pattern string) int {
+	pattern = strings.TrimSpace(pattern)
+	literalLength := len(strings.NewReplacer("*", "", "?", "").Replace(pattern))
+	if !strings.ContainsAny(pattern, "*?") {
+		return 10_000 + literalLength*10
+	}
+	return literalLength * 10
 }
 
 func grantScore(grant Grant, model string) int {
