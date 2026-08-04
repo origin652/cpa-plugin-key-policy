@@ -312,7 +312,7 @@ func targetModel(grant Grant, canonicalModel string) string {
 	return grant.UpstreamPrefix + "/" + canonicalModel
 }
 
-func splitNativeModelPrefix(requestedModel string) (prefix, model string, explicit bool) {
+func splitNativeModelPrefix(policy Policy, requestedModel string) (prefix, model string, explicit bool) {
 	requestedModel = strings.TrimSpace(requestedModel)
 	prefix, model, explicit = strings.Cut(requestedModel, "/")
 	prefix = strings.TrimSpace(prefix)
@@ -320,7 +320,16 @@ func splitNativeModelPrefix(requestedModel string) (prefix, model string, explic
 	if !explicit || prefix == "" || model == "" {
 		return "", requestedModel, false
 	}
-	return strings.Trim(prefix, "/"), model, true
+	prefix = strings.Trim(prefix, "/")
+	for _, grant := range policy.Grants {
+		if grant.UpstreamPrefix != "" && strings.EqualFold(grant.UpstreamPrefix, prefix) {
+			return prefix, model, true
+		}
+	}
+	// OpenAI-compatible model IDs may themselves contain slashes (for example
+	// "zai-org/GLM-5.2"). Treat the first segment as an upstream selector only
+	// when it names a prefix present in this key's policy.
+	return "", requestedModel, false
 }
 
 func matchingGrants(policy Policy, requestedModel string, explicitPrefix string) []grantMatch {
@@ -361,7 +370,7 @@ func matchingGrants(policy Policy, requestedModel string, explicitPrefix string)
 //   - Multiple account-scoped grants are ambiguous without an explicit prefix
 //     and fail closed instead of selecting the first sorted grant.
 func routeDecision(policy Policy, requestedModel string) Decision {
-	explicitPrefix, baseModel, explicit := splitNativeModelPrefix(requestedModel)
+	explicitPrefix, baseModel, explicit := splitNativeModelPrefix(policy, requestedModel)
 	matches := matchingGrants(policy, baseModel, explicitPrefix)
 	if len(matches) == 0 {
 		return Decision{Model: baseModel, Reason: "model_not_allowed"}

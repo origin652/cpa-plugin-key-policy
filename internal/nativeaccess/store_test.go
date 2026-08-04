@@ -364,6 +364,11 @@ func TestOpenAICompatibleProvidersAreScopedPerRequestedModel(t *testing.T) {
 				Model:          "glm-*",
 				UpstreamPrefix: "siliconflow",
 			},
+			{
+				Provider:       "siliconflow",
+				Model:          "zai-org/GLM-5.2",
+				UpstreamPrefix: "siliconflow",
+			},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -371,6 +376,8 @@ func TestOpenAICompatibleProvidersAreScopedPerRequestedModel(t *testing.T) {
 	cases := map[string]string{
 		"deepseek-v4-pro":              "deepseek-own/deepseek-v4-pro",
 		"siliconflow/glm-5":            "siliconflow/glm-5",
+		"zai-org/GLM-5.2":              "siliconflow/zai-org/GLM-5.2",
+		"siliconflow/zai-org/GLM-5.2":  "siliconflow/zai-org/GLM-5.2",
 		"deepseek-own/deepseek-v4-pro": "deepseek-own/deepseek-v4-pro",
 	}
 	for requested, target := range cases {
