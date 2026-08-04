@@ -28,7 +28,10 @@ func TestRunStagesLosslessMigration(t *testing.T) {
 		ID: "issued", PlainKey: plain, KeyHash: hash, Enabled: true, RPM: 12,
 		Aliases: []policy.KeyAliasRef{{Alias: aliases[0].Alias}},
 	}}
-	if err := policy.SaveState(legacyPath, keys, nil, aliases, nil); err != nil {
+	rules := []policy.ClassifyRule{{
+		Name: "csil-from-state", Field: "filename", Pattern: "csil", Group: "csil", Enabled: true,
+	}}
+	if err := policy.SaveState(legacyPath, keys, nil, aliases, rules); err != nil {
 		t.Fatal(err)
 	}
 	source := []byte(`port: 8317
@@ -70,6 +73,7 @@ plugins:
 		"native_keys_file: /CLIProxyAPI/config.yaml",
 		"native_state_file: /root/.cli-proxy-api/cpa-key-access-policy-state.json",
 		"classify_rules:",
+		"name: csil-from-state",
 	} {
 		if !bytes.Contains(staged, []byte(expected)) {
 			t.Fatalf("staged config is missing %q", expected)

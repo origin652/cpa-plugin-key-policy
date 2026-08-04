@@ -75,7 +75,7 @@ func run(legacyState, sourceConfig, outputConfig, outputPolicy string, force boo
 	if err != nil {
 		return err
 	}
-	stagedConfig, err = enableNativeAccess(stagedConfig)
+	stagedConfig, err = enableNativeAccess(stagedConfig, legacy.ClassifyRules)
 	if err != nil {
 		return err
 	}
@@ -156,7 +156,7 @@ func replaceAPIKeys(raw []byte, keys []string) ([]byte, []string, error) {
 	return out.Bytes(), existing, encoder.Close()
 }
 
-func enableNativeAccess(raw []byte) ([]byte, error) {
+func enableNativeAccess(raw []byte, classifyRules []policy.ClassifyRule) ([]byte, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		return nil, err
@@ -182,6 +182,20 @@ func enableNativeAccess(raw []byte) ([]byte, error) {
 	setMappingScalar(keyPolicy, "mode", "native-access")
 	setMappingScalar(keyPolicy, "native_keys_file", "/CLIProxyAPI/config.yaml")
 	setMappingScalar(keyPolicy, "native_state_file", "/root/.cli-proxy-api/cpa-key-access-policy-state.json")
+	if len(classifyRules) > 0 {
+		var encoded yaml.Node
+		rawRules, err := yaml.Marshal(classifyRules)
+		if err != nil {
+			return nil, err
+		}
+		if err := yaml.Unmarshal(rawRules, &encoded); err != nil {
+			return nil, err
+		}
+		if len(encoded.Content) != 1 {
+			return nil, errors.New("failed to encode classify rules")
+		}
+		setMappingNode(keyPolicy, "classify_rules", encoded.Content[0])
+	}
 
 	var out bytes.Buffer
 	encoder := yaml.NewEncoder(&out)
@@ -202,15 +216,19 @@ func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
 }
 
 func setMappingScalar(mapping *yaml.Node, key, value string) {
+	setMappingNode(mapping, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+}
+
+func setMappingNode(mapping *yaml.Node, key string, value *yaml.Node) {
 	for index := 0; index+1 < len(mapping.Content); index += 2 {
 		if mapping.Content[index].Value == key {
-			mapping.Content[index+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+			mapping.Content[index+1] = value
 			return
 		}
 	}
 	mapping.Content = append(mapping.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+		value,
 	)
 }
 
