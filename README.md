@@ -117,25 +117,24 @@ Copy the `.so` into CPA `plugins.dir` and enable the plugin in config.
 only client identities. The plugin stores only key hashes, grants, quotas, and
 usage counters.
 
-During a prefix migration, one grant can accept both the canonical model and
-temporary legacy client prefixes while still using CPA's native credential
-prefix internally:
+Clients always request the canonical model name. A grant constrains eligible
+providers and, optionally, a server-side credential group:
 
 ```json
 {
   "provider": "codex",
   "model": "gpt-5.6-*",
-  "group": "classify:csil",
-  "upstream_prefix": "codex-csil",
-  "accepted_prefixes": ["codex-csil-"]
+  "group": "classify:csil"
 }
 ```
 
-Both `gpt-5.6-sol` and `codex-csil-gpt-5.6-sol` route to
-`codex-csil/gpt-5.6-sol`. The scheduler only accepts credentials classified as
-`csil`; if none are healthy it fails closed instead of falling back to another
-Codex account. Remove `accepted_prefixes` after clients have migrated. The
-native API key does not change.
+The client sends only `gpt-5.6-sol`. The scheduler accepts only credentials
+classified as `csil`; if none are healthy it fails closed instead of falling
+back to another Codex account. Add several grants with the same canonical model
+to authorize a candidate set. When every usable candidate is authorized, the
+plugin defers to CPA's native priority, fill-first / round-robin, and session
+affinity. Client-visible `provider/model` and legacy dash-prefix aliases are
+not accepted, so upstream selection stays opaque.
 
 Minimal shape (see also [`config.example.yaml`](./config.example.yaml)):
 

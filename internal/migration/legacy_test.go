@@ -6,7 +6,7 @@ import (
 	"cpa-key-policy/internal/policy"
 )
 
-func TestPlanPreservesKeyAndLegacyAlias(t *testing.T) {
+func TestPlanPreservesKeyAndConvertsAliasToCanonicalGrant(t *testing.T) {
 	const plain = "sk-existing"
 	hash, err := policy.HashKey(plain)
 	if err != nil {
@@ -36,9 +36,8 @@ func TestPlanPreservesKeyAndLegacyAlias(t *testing.T) {
 		t.Fatalf("migration lost identity: keys=%d policies=%d", len(keys), len(policies))
 	}
 	grant := policies[0].Grants[0]
-	if grant.Model != "gpt-5.6-sol" || grant.UpstreamPrefix != "codex-csil" ||
-		grant.Group != "classify:csil" || len(grant.AcceptedModels) != 1 ||
-		grant.AcceptedModels[0] != "codex-csil-gpt-5.6-sol" {
+	if grant.Model != "gpt-5.6-sol" || grant.Group != "classify:csil" ||
+		grant.UpstreamPrefix != "" || len(grant.AcceptedModels) != 0 {
 		t.Fatalf("unexpected grant: %#v", grant)
 	}
 }

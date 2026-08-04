@@ -122,13 +122,10 @@ func TestWildcardGrantsAndProviderConstraint(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := store.Authenticate(key, "gpt-5.6-sol", false); !got.Allowed || got.Provider != "codex" {
+	if got := store.Authenticate(key, "gpt-5.6-sol", false); !got.Allowed {
 		t.Fatalf("expected codex wildcard grant, got %#v", got)
 	}
-	if provider, ok := store.RouteProvider(key, "gpt-5.6-sol"); !ok || provider != "codex" {
-		t.Fatalf("expected provider constraint codex, got %q %v", provider, ok)
-	}
-	if got := store.Authenticate(key, "kimi-k2.5", false); !got.Allowed || got.Provider != "kimi" {
+	if got := store.Authenticate(key, "kimi-k2.5", false); !got.Allowed {
 		t.Fatalf("expected kimi all-model grant, got %#v", got)
 	}
 	models, handled := store.FilterModels(key, []map[string]any{
@@ -145,7 +142,7 @@ func TestWildcardGrantsAndProviderConstraint(t *testing.T) {
 	}
 }
 
-func TestCompatibilityPrefixRoutesToNativeUpstreamPrefix(t *testing.T) {
+func TestClientVisibleUpstreamSelectorsAreRejected(t *testing.T) {
 	dir := t.TempDir()
 	keysFile := filepath.Join(dir, "config.yaml")
 	const key = "sk-csil-existing"
@@ -170,19 +167,18 @@ func TestCompatibilityPrefixRoutesToNativeUpstreamPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, requested := range []string{"gpt-5.6-sol", "codex-csil-gpt-5.6-sol"} {
-		got := store.Authenticate(key, requested, false)
-		if !got.Allowed || got.Provider != "codex" || got.Model != "gpt-5.6-sol" ||
-			got.TargetModel != "codex-csil/gpt-5.6-sol" || got.Group != "classify:csil" {
-			t.Fatalf("unexpected decision for %q: %#v", requested, got)
-		}
-		route, ok := store.Route(key, requested)
-		if !ok || route.TargetModel != "codex-csil/gpt-5.6-sol" || route.Group != "classify:csil" {
-			t.Fatalf("unexpected route for %q: %#v %v", requested, route, ok)
-		}
+	if got := store.Authenticate(key, "gpt-5.6-sol", false); !got.Allowed ||
+		got.TargetModel != "gpt-5.6-sol" {
+		t.Fatalf("canonical model must be allowed unchanged: %#v", got)
 	}
-	if got := store.Authenticate(key, "codex-csil-gpt-5.7-sol", false); got.Allowed {
-		t.Fatalf("compatibility prefix must not broaden the model grant: %#v", got)
+	for _, requested := range []string{
+		"codex-csil/gpt-5.6-sol",
+		"codex-csil-gpt-5.6-sol",
+		"codex-csil-gpt-5.7-sol",
+	} {
+		if got := store.Authenticate(key, requested, false); got.Allowed {
+			t.Fatalf("client upstream selector %q must be rejected: %#v", requested, got)
+		}
 	}
 
 	models, handled := store.FilterModels(key, []map[string]any{
@@ -194,15 +190,12 @@ func TestCompatibilityPrefixRoutesToNativeUpstreamPrefix(t *testing.T) {
 		"codex-csil/gpt-5.6-sol": {"codex"},
 		"codex-csil/gpt-5.7-sol": {"codex"},
 	})
-	if !handled || len(models) != 3 ||
-		models[0]["id"] != "gpt-5.6-sol" ||
-		models[1]["id"] != "codex-csil/gpt-5.6-sol" ||
-		models[2]["id"] != "codex-csil-gpt-5.6-sol" {
-		t.Fatalf("expected canonical, native-prefix, and legacy catalog names, got %#v", models)
+	if !handled || len(models) != 1 || models[0]["id"] != "gpt-5.6-sol" {
+		t.Fatalf("expected one canonical catalog name, got %#v", models)
 	}
 }
 
-func TestExactLegacyAliasRoutesToCanonicalModel(t *testing.T) {
+func TestExactLegacyAliasIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	keysFile := filepath.Join(dir, "config.yaml")
 	const key = "sk-existing-alias"
@@ -225,12 +218,12 @@ func TestExactLegacyAliasRoutesToCanonicalModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := store.Authenticate(key, "deepseek-personal-deepseek-v4-pro", false)
-	if !got.Allowed || got.Model != "deepseek-v4-pro" || got.TargetModel != "deepseek-v4-pro" {
-		t.Fatalf("legacy exact alias did not normalize: %#v", got)
+	if got.Allowed {
+		t.Fatalf("legacy exact alias must not select an upstream: %#v", got)
 	}
 }
 
-func TestNativePrefixRoutingAndAmbiguityRules(t *testing.T) {
+func TestCanonicalModelAllowsOneOrManyServerSideUpstreams(t *testing.T) {
 	dir := t.TempDir()
 	keysFile := filepath.Join(dir, "config.yaml")
 	const key = "sk-native-prefix-routing"
@@ -253,7 +246,7 @@ func TestNativePrefixRoutingAndAmbiguityRules(t *testing.T) {
 		}
 	}
 
-	t.Run("single account scoped upstream is automatic", func(t *testing.T) {
+	t.Run("single account scoped upstream is authorized canonically", func(t *testing.T) {
 		upsert(Grant{
 			Provider:       "codex",
 			Model:          "gpt-5.6-sol",
@@ -261,24 +254,20 @@ func TestNativePrefixRoutingAndAmbiguityRules(t *testing.T) {
 			UpstreamPrefix: "codex-csil",
 		})
 		got := store.Authenticate(key, "gpt-5.6-sol", false)
-		if !got.Allowed || got.TargetModel != "codex-csil/gpt-5.6-sol" ||
-			got.Reason != "allowed_unique_upstream" {
+		if !got.Allowed || got.TargetModel != "gpt-5.6-sol" ||
+			got.Reason != "allowed_server_side_upstream_policy" {
 			t.Fatalf("unexpected unique-upstream decision: %#v", got)
 		}
 	})
 
-	t.Run("explicit native prefix is authorized", func(t *testing.T) {
+	t.Run("explicit native prefix is forbidden", func(t *testing.T) {
 		got := store.Authenticate(key, "codex-csil/gpt-5.6-sol", false)
-		if !got.Allowed || got.TargetModel != "codex-csil/gpt-5.6-sol" ||
-			got.Reason != "allowed_explicit_upstream" {
-			t.Fatalf("unexpected explicit-prefix decision: %#v", got)
-		}
-		if denied := store.Authenticate(key, "codex-dongwu/gpt-5.6-sol", false); denied.Allowed {
-			t.Fatalf("ungranted native prefix must be denied: %#v", denied)
+		if got.Allowed {
+			t.Fatalf("client prefix must be denied: %#v", got)
 		}
 	})
 
-	t.Run("multiple account scoped upstreams require prefix", func(t *testing.T) {
+	t.Run("multiple account scoped upstreams are an allowed candidate set", func(t *testing.T) {
 		upsert(
 			Grant{
 				Provider:       "codex",
@@ -294,46 +283,38 @@ func TestNativePrefixRoutingAndAmbiguityRules(t *testing.T) {
 			},
 		)
 		got := store.Authenticate(key, "gpt-5.6-sol", false)
-		if got.Allowed || got.Reason != "ambiguous_upstream_prefix_required" {
-			t.Fatalf("ambiguous unprefixed request must fail closed: %#v", got)
+		if !got.Allowed || got.TargetModel != "gpt-5.6-sol" {
+			t.Fatalf("canonical request must authorize the candidate set: %#v", got)
 		}
-		for _, requested := range []string{
-			"codex-dongwu/gpt-5.6-sol",
-			"codex-csil/gpt-5.6-sol",
-		} {
-			if got := store.Authenticate(key, requested, false); !got.Allowed {
-				t.Fatalf("explicit request %q should be allowed: %#v", requested, got)
-			}
+		grants, ok := store.SchedulerGrants(HashKey(key), "gpt-5.6-sol")
+		if !ok || len(grants) != 2 {
+			t.Fatalf("scheduler must receive both allowed groups: %#v %v", grants, ok)
 		}
 	})
 
 	t.Run("one provider wide grant delegates within provider", func(t *testing.T) {
 		upsert(Grant{Provider: "codex", Model: "gpt-5.6-sol"})
 		got := store.Authenticate(key, "gpt-5.6-sol", false)
-		if !got.Allowed || got.Provider != "codex" ||
-			got.TargetModel != "gpt-5.6-sol" ||
-			got.Reason != "allowed_provider_scheduler" {
+		if !got.Allowed || got.TargetModel != "gpt-5.6-sol" {
 			t.Fatalf("provider-wide grant should delegate to CPA: %#v", got)
 		}
 	})
 
-	t.Run("multiple provider subsets require prefix", func(t *testing.T) {
+	t.Run("multiple provider subsets are authorized together", func(t *testing.T) {
 		upsert(
 			Grant{Provider: "codex", Model: "gpt-5.6-sol"},
 			Grant{Provider: "github-copilot", Model: "gpt-5.6-sol"},
 		)
 		got := store.Authenticate(key, "gpt-5.6-sol", false)
-		if got.Allowed || got.Reason != "ambiguous_upstream_prefix_required" {
-			t.Fatalf("multi-provider subset must require explicit routing: %#v", got)
+		if !got.Allowed {
+			t.Fatalf("multi-provider subset must be filtered by scheduler: %#v", got)
 		}
 	})
 
 	t.Run("global provider grant delegates unchanged", func(t *testing.T) {
 		upsert(Grant{Provider: "*", Model: "gpt-5.6-sol"})
 		got := store.Authenticate(key, "gpt-5.6-sol", false)
-		if !got.Allowed || got.Provider != "*" ||
-			got.TargetModel != "gpt-5.6-sol" ||
-			got.Reason != "allowed_all_upstreams" {
+		if !got.Allowed || got.TargetModel != "gpt-5.6-sol" {
 			t.Fatalf("global grant should leave routing to CPA: %#v", got)
 		}
 	})
@@ -373,21 +354,25 @@ func TestOpenAICompatibleProvidersAreScopedPerRequestedModel(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]string{
-		"deepseek-v4-pro":              "deepseek-own/deepseek-v4-pro",
-		"siliconflow/glm-5":            "siliconflow/glm-5",
-		"zai-org/GLM-5.2":              "siliconflow/zai-org/GLM-5.2",
-		"siliconflow/zai-org/GLM-5.2":  "siliconflow/zai-org/GLM-5.2",
-		"deepseek-own/deepseek-v4-pro": "deepseek-own/deepseek-v4-pro",
+	cases := []string{
+		"deepseek-v4-pro",
+		"glm-5",
+		"zai-org/GLM-5.2",
 	}
-	for requested, target := range cases {
+	for _, requested := range cases {
 		got := store.Authenticate(key, requested, false)
-		if !got.Allowed || got.TargetModel != target {
+		if !got.Allowed || got.TargetModel != requested {
 			t.Fatalf("unexpected OpenAI-compatible route for %q: %#v", requested, got)
 		}
 	}
-	if got := store.Authenticate(key, "siliconflow/deepseek-v4-pro", false); got.Allowed {
-		t.Fatalf("provider access must remain model-scoped: %#v", got)
+	for _, requested := range []string{
+		"siliconflow/deepseek-v4-pro",
+		"siliconflow/zai-org/GLM-5.2",
+		"deepseek-own/deepseek-v4-pro",
+	} {
+		if got := store.Authenticate(key, requested, false); got.Allowed {
+			t.Fatalf("client provider selector %q must be rejected: %#v", requested, got)
+		}
 	}
 }
 

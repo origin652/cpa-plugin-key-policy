@@ -20,9 +20,12 @@ import (
 const hashPrefix = "sha256:"
 
 type Grant struct {
-	Provider         string   `json:"provider"`
-	Model            string   `json:"model"`
-	Group            string   `json:"group,omitempty"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Group    string `json:"group,omitempty"`
+	// UpstreamPrefix and the compatibility fields are retained only so an
+	// existing state file can be read during migration. Native-access mode no
+	// longer accepts client-visible provider prefixes or model aliases.
 	UpstreamPrefix   string   `json:"upstream_prefix,omitempty"`
 	AcceptedPrefixes []string `json:"accepted_prefixes,omitempty"`
 	AcceptedModels   []string `json:"accepted_models,omitempty"`
@@ -210,6 +213,12 @@ func normalizePolicy(input Policy) (Policy, error) {
 		if grant.Provider == "*" && (grant.Group != "" || grant.UpstreamPrefix != "") {
 			return Policy{}, errors.New("group and upstream_prefix require a concrete provider")
 		}
+		// V2 routes exclusively from canonical model + server-side provider/group
+		// grants. Strip the former client-prefix compatibility fields whenever
+		// policy state is loaded or saved.
+		grant.UpstreamPrefix = ""
+		grant.AcceptedPrefixes = nil
+		grant.AcceptedModels = nil
 		id := grant.Provider + "\x00" + strings.ToLower(grant.Model) + "\x00" +
 			strings.ToLower(grant.Group) + "\x00" + strings.ToLower(grant.UpstreamPrefix) +
 			"\x00" + strings.ToLower(strings.Join(grant.AcceptedPrefixes, "\x01")) +
@@ -248,43 +257,14 @@ func wildcardMatch(pattern, value string) bool {
 func matchGrant(grant Grant, requestedModel string) (canonicalModel string, score int, ok bool) {
 	requestedModel = strings.TrimSpace(requestedModel)
 	canonicalModel = requestedModel
-	compatibilityMatch := false
 	if !wildcardMatch(grant.Model, canonicalModel) {
-		canonicalModel = ""
-		for _, acceptedModel := range grant.AcceptedModels {
-			if strings.EqualFold(requestedModel, acceptedModel) {
-				canonicalModel = grant.Model
-				compatibilityMatch = true
-				break
-			}
-		}
-		for _, prefix := range grant.AcceptedPrefixes {
-			if canonicalModel != "" {
-				break
-			}
-			if len(requestedModel) <= len(prefix) || !strings.EqualFold(requestedModel[:len(prefix)], prefix) {
-				continue
-			}
-			candidate := requestedModel[len(prefix):]
-			if wildcardMatch(grant.Model, candidate) {
-				canonicalModel = candidate
-				compatibilityMatch = true
-				break
-			}
-		}
-		if canonicalModel == "" {
-			return "", -1, false
-		}
+		return "", -1, false
 	}
 	score = modelPatternSpecificity(grant.Model)
 	if grant.Provider != "*" {
 		score += 2
 	}
-	// Prefer the canonical unprefixed spelling when two otherwise equivalent
-	// grants overlap. Compatibility names remain accepted during migration.
-	if !compatibilityMatch {
-		score++
-	}
+	score++
 	return canonicalModel, score, true
 }
 
@@ -305,40 +285,36 @@ func grantScore(grant Grant, model string) int {
 	return score
 }
 
-func targetModel(grant Grant, canonicalModel string) string {
-	if grant.UpstreamPrefix == "" {
-		return canonicalModel
-	}
-	return grant.UpstreamPrefix + "/" + canonicalModel
-}
-
-func splitNativeModelPrefix(policy Policy, requestedModel string) (prefix, model string, explicit bool) {
+func hasClientUpstreamSelector(policy Policy, requestedModel string) bool {
 	requestedModel = strings.TrimSpace(requestedModel)
-	prefix, model, explicit = strings.Cut(requestedModel, "/")
-	prefix = strings.TrimSpace(prefix)
-	model = strings.TrimSpace(model)
-	if !explicit || prefix == "" || model == "" {
-		return "", requestedModel, false
-	}
-	prefix = strings.Trim(prefix, "/")
-	for _, grant := range policy.Grants {
-		if grant.UpstreamPrefix != "" && strings.EqualFold(grant.UpstreamPrefix, prefix) {
-			return prefix, model, true
+	prefix, model, slash := strings.Cut(requestedModel, "/")
+	if slash && strings.TrimSpace(prefix) != "" && strings.TrimSpace(model) != "" {
+		for _, grant := range policy.Grants {
+			if grant.UpstreamPrefix != "" && strings.EqualFold(grant.UpstreamPrefix, strings.Trim(prefix, "/ ")) {
+				return true
+			}
 		}
 	}
-	// OpenAI-compatible model IDs may themselves contain slashes (for example
-	// "zai-org/GLM-5.2"). Treat the first segment as an upstream selector only
-	// when it names a prefix present in this key's policy.
-	return "", requestedModel, false
+	for _, grant := range policy.Grants {
+		for _, acceptedModel := range grant.AcceptedModels {
+			if strings.EqualFold(strings.TrimSpace(acceptedModel), requestedModel) {
+				return true
+			}
+		}
+		for _, acceptedPrefix := range grant.AcceptedPrefixes {
+			if acceptedPrefix != "" && len(requestedModel) > len(acceptedPrefix) &&
+				strings.EqualFold(requestedModel[:len(acceptedPrefix)], acceptedPrefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-func matchingGrants(policy Policy, requestedModel string, explicitPrefix string) []grantMatch {
+func matchingGrants(policy Policy, requestedModel string) []grantMatch {
 	matches := make([]grantMatch, 0, len(policy.Grants))
 	bestScore := -1
 	for _, grant := range policy.Grants {
-		if explicitPrefix != "" && !strings.EqualFold(grant.UpstreamPrefix, explicitPrefix) {
-			continue
-		}
 		canonicalModel, score, matched := matchGrant(grant, requestedModel)
 		if !matched {
 			continue
@@ -358,87 +334,25 @@ func matchingGrants(policy Policy, requestedModel string, explicitPrefix string)
 	return matches
 }
 
-// routeDecision separates authorization from CPA's own credential scheduler.
-//
-//   - An explicit native "prefix/model" request must match a grant carrying
-//     exactly that upstream_prefix.
-//   - A provider-wide grant (no group/prefix) delegates credential selection
-//     to CPA for that provider.
-//   - A global "* / model" grant delegates provider and credential selection
-//     to CPA unchanged.
-//   - One account-scoped grant is safely normalized to its native prefix.
-//   - Multiple account-scoped grants are ambiguous without an explicit prefix
-//     and fail closed instead of selecting the first sorted grant.
+// routeDecision authorizes only the canonical client model name. Upstream
+// selection is intentionally absent here: scheduler.pick filters the host's
+// auth candidates using every matching grant, so the upstream remains opaque
+// to clients and one key can safely authorize one or many credential groups.
 func routeDecision(policy Policy, requestedModel string) Decision {
-	explicitPrefix, baseModel, explicit := splitNativeModelPrefix(policy, requestedModel)
-	matches := matchingGrants(policy, baseModel, explicitPrefix)
+	requestedModel = strings.TrimSpace(requestedModel)
+	if hasClientUpstreamSelector(policy, requestedModel) {
+		return Decision{Model: requestedModel, Reason: "client_upstream_selector_forbidden"}
+	}
+	matches := matchingGrants(policy, requestedModel)
 	if len(matches) == 0 {
-		return Decision{Model: baseModel, Reason: "model_not_allowed"}
+		return Decision{Model: requestedModel, Reason: "model_not_allowed"}
 	}
-
-	if explicit {
-		selected := matches[0]
-		return Decision{
-			Allowed:     true,
-			Provider:    selected.grant.Provider,
-			Model:       selected.canonicalModel,
-			TargetModel: targetModel(selected.grant, selected.canonicalModel),
-			Group:       selected.grant.Group,
-			Reason:      "allowed_explicit_upstream",
-		}
+	return Decision{
+		Allowed:     true,
+		Model:       matches[0].canonicalModel,
+		TargetModel: matches[0].canonicalModel,
+		Reason:      "allowed_server_side_upstream_policy",
 	}
-
-	for _, match := range matches {
-		if match.grant.Provider == "*" && match.grant.Group == "" && match.grant.UpstreamPrefix == "" {
-			return Decision{
-				Allowed:     true,
-				Provider:    "*",
-				Model:       match.canonicalModel,
-				TargetModel: match.canonicalModel,
-				Reason:      "allowed_all_upstreams",
-			}
-		}
-	}
-
-	providerWide := make(map[string]grantMatch)
-	accountScoped := make([]grantMatch, 0, len(matches))
-	for _, match := range matches {
-		if match.grant.Group == "" && match.grant.UpstreamPrefix == "" {
-			providerWide[match.grant.Provider] = match
-			continue
-		}
-		accountScoped = append(accountScoped, match)
-	}
-	if len(providerWide) == 1 {
-		for _, selected := range providerWide {
-			return Decision{
-				Allowed:     true,
-				Provider:    selected.grant.Provider,
-				Model:       selected.canonicalModel,
-				TargetModel: selected.canonicalModel,
-				Reason:      "allowed_provider_scheduler",
-			}
-		}
-	}
-	if len(providerWide) > 1 {
-		return Decision{Model: baseModel, Reason: "ambiguous_upstream_prefix_required"}
-	}
-
-	if len(accountScoped) == 1 {
-		selected := accountScoped[0]
-		if selected.grant.UpstreamPrefix == "" {
-			return Decision{Model: baseModel, Reason: "upstream_prefix_required"}
-		}
-		return Decision{
-			Allowed:     true,
-			Provider:    selected.grant.Provider,
-			Model:       selected.canonicalModel,
-			TargetModel: targetModel(selected.grant, selected.canonicalModel),
-			Group:       selected.grant.Group,
-			Reason:      "allowed_unique_upstream",
-		}
-	}
-	return Decision{Model: baseModel, Reason: "ambiguous_upstream_prefix_required"}
 }
 
 func (s *Store) refreshKeysLocked(force bool) error {
@@ -822,10 +736,8 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 	return decision
 }
 
-// Route returns the provider, canonical model, upstream-prefixed model, and
-// optional credential group for an already-authorized request. Compatibility
-// client prefixes are stripped before matching; UpstreamPrefix is then applied
-// using CPA's native "prefix/model" syntax.
+// Route returns the canonical model for an already-authorized request.
+// Upstream selection is performed later by scheduler.pick.
 func (s *Store) Route(rawKey, model string) (Decision, bool) {
 	if err := s.refreshKeys(); err != nil {
 		return Decision{}, false
@@ -854,6 +766,55 @@ func (s *Store) Route(rawKey, model string) (Decision, bool) {
 func (s *Store) RouteProvider(rawKey, model string) (string, bool) {
 	decision, ok := s.Route(rawKey, model)
 	return decision.Provider, ok
+}
+
+// SchedulerGrants returns the complete best-matching grant set for a key and
+// canonical model. The caller uses the set to filter CPA auth candidates.
+func (s *Store) SchedulerGrants(keyHash, model string) ([]Grant, bool) {
+	if err := s.refreshKeys(); err != nil {
+		return nil, false
+	}
+	if err := s.refreshState(); err != nil {
+		return nil, false
+	}
+	keyHash = strings.ToLower(strings.TrimSpace(keyHash))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, active := s.activeByHash[keyHash]; !active {
+		return nil, false
+	}
+	policy, exists := s.policiesByHash[keyHash]
+	if !exists || !policy.Enabled || hasClientUpstreamSelector(policy, model) {
+		return nil, false
+	}
+	matches := matchingGrants(policy, model)
+	if len(matches) == 0 {
+		return nil, false
+	}
+	grants := make([]Grant, 0, len(matches))
+	for _, match := range matches {
+		grants = append(grants, match.grant)
+	}
+	return grants, true
+}
+
+// ProviderMatchesCandidate compares a policy provider with the provider name
+// exposed by CPA's scheduler. OpenAI-compatible providers may be represented
+// either as their configured name or as "openai-compatible-<name>".
+func ProviderMatchesCandidate(pattern, candidate string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	candidate = strings.ToLower(strings.TrimSpace(candidate))
+	if wildcardMatch(pattern, candidate) {
+		return true
+	}
+	const compatiblePrefix = "openai-compatible-"
+	if strings.HasPrefix(candidate, compatiblePrefix) {
+		return wildcardMatch(pattern, strings.TrimPrefix(candidate, compatiblePrefix))
+	}
+	if strings.HasPrefix(pattern, compatiblePrefix) {
+		return wildcardMatch(strings.TrimPrefix(pattern, compatiblePrefix), candidate)
+	}
+	return false
 }
 
 // FilterModels returns only model entries matched by at least one grant for
@@ -913,15 +874,6 @@ func (s *Store) FilterModels(rawKey string, models []map[string]any, modelProvid
 				continue
 			}
 			appendModel(model, canonicalID)
-			if grant.UpstreamPrefix != "" {
-				appendModel(model, grant.UpstreamPrefix+"/"+canonicalID)
-			}
-			for _, acceptedModel := range grant.AcceptedModels {
-				appendModel(model, acceptedModel)
-			}
-			for _, prefix := range grant.AcceptedPrefixes {
-				appendModel(model, prefix+canonicalID)
-			}
 		}
 	}
 	return filtered, true

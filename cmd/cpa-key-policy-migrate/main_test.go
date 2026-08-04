@@ -88,11 +88,12 @@ plugins:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, model := range []string{"gpt-5.6-sol", "codex-csil-gpt-5.6-sol"} {
-		decision := store.Authenticate(plain, model, false)
-		if !decision.Allowed || decision.TargetModel != "codex-csil/gpt-5.6-sol" {
-			t.Fatalf("staged policy rejected %q: %#v", model, decision)
-		}
+	decision := store.Authenticate(plain, "gpt-5.6-sol", false)
+	if !decision.Allowed || decision.TargetModel != "gpt-5.6-sol" {
+		t.Fatalf("staged policy rejected canonical model: %#v", decision)
+	}
+	if legacy := store.Authenticate(plain, "codex-csil-gpt-5.6-sol", false); legacy.Allowed {
+		t.Fatalf("staged policy retained a client upstream selector: %#v", legacy)
 	}
 }
 

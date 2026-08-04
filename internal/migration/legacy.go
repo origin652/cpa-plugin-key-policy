@@ -68,22 +68,14 @@ func Plan(state *policy.State) ([]string, []nativeaccess.Policy, error) {
 	return keys, policies, nil
 }
 
-func grantFromTarget(clientModel string, target policy.AliasTarget) nativeaccess.Grant {
+func grantFromTarget(_ string, target policy.AliasTarget) nativeaccess.Grant {
 	canonical := strings.TrimSpace(target.TargetModel)
-	upstreamPrefix := ""
-	if before, after, found := strings.Cut(canonical, "/"); found {
-		upstreamPrefix = strings.TrimSpace(before)
+	if _, after, found := strings.Cut(canonical, "/"); found {
 		canonical = strings.TrimSpace(after)
 	}
-	grant := nativeaccess.Grant{
-		Provider:       target.Provider,
-		Model:          canonical,
-		Group:          target.Group,
-		UpstreamPrefix: upstreamPrefix,
+	return nativeaccess.Grant{
+		Provider: target.Provider,
+		Model:    canonical,
+		Group:    target.Group,
 	}
-	clientModel = strings.TrimSpace(clientModel)
-	if clientModel != "" && !strings.EqualFold(clientModel, canonical) {
-		grant.AcceptedModels = []string{clientModel}
-	}
-	return grant
 }

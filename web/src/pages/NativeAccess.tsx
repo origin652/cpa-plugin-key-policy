@@ -4,7 +4,8 @@ import {
   listNativePolicies,
   saveNativePolicy,
 } from "../api/nativeAccess";
-import type { NativeGrant, NativeIdentity, NativePolicy } from "../types";
+import { fetchCatalog } from "../api/models";
+import type { CatalogModel, NativeGrant, NativeIdentity, NativePolicy } from "../types";
 import { useT } from "../i18n";
 
 const emptyGrant = (): NativeGrant => ({ provider: "", model: "" });
@@ -17,6 +18,7 @@ export default function NativeAccess() {
   const t = useT();
   const [identities, setIdentities] = useState<NativeIdentity[]>([]);
   const [policies, setPolicies] = useState<NativePolicy[]>([]);
+  const [catalog, setCatalog] = useState<CatalogModel[]>([]);
   const [editing, setEditing] = useState<NativePolicy | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -25,12 +27,14 @@ export default function NativeAccess() {
     setLoading(true);
     setError("");
     try {
-      const [nextIdentities, nextPolicies] = await Promise.all([
+      const [nextIdentities, nextPolicies, nextCatalog] = await Promise.all([
         listNativeIdentities(),
         listNativePolicies(),
+        fetchCatalog(),
       ]);
       setIdentities(nextIdentities);
       setPolicies(nextPolicies);
+      setCatalog(nextCatalog);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -90,6 +94,7 @@ export default function NativeAccess() {
       {editing && (
         <NativePolicyEditor
           policy={editing}
+          catalog={catalog}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); void load(); }}
         />
@@ -100,10 +105,12 @@ export default function NativeAccess() {
 
 function NativePolicyEditor({
   policy: initial,
+  catalog,
   onClose,
   onSaved,
 }: {
   policy: NativePolicy;
+  catalog: CatalogModel[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -120,7 +127,13 @@ function NativePolicyEditor({
     }));
   };
   const save = async () => {
-    const grants = policy.grants.filter((grant) => grant.provider.trim() && grant.model.trim());
+    const grants = policy.grants
+      .filter((grant) => grant.provider.trim() && grant.model.trim())
+      .map((grant) => ({
+        provider: grant.provider.trim(),
+        model: grant.model.trim(),
+        ...(grant.group?.trim() ? { group: grant.group.trim() } : {}),
+      }));
     if (grants.length === 0) {
       setError(t("native.grantRequired"));
       return;
@@ -156,20 +169,29 @@ function NativePolicyEditor({
         <label className="native-check">
           <input
             type="checkbox"
+            role="switch"
             checked={policy.enabled}
             onChange={(event) => setPolicy({ ...policy, enabled: event.target.checked })}
           />
           {t("native.enabled")}
         </label>
+        <div className="muted">{t("native.upstreamOpaqueHint")}</div>
         {policy.grants.map((grant, index) => (
           <div className="card" key={index} style={{ marginTop: 10 }}>
             <div className="form-grid two">
-              <input className="input" value={grant.provider} placeholder={t("native.provider")} onChange={(e) => updateGrant(index, { provider: e.target.value })} />
-              <input className="input" value={grant.model} placeholder={t("native.model")} onChange={(e) => updateGrant(index, { model: e.target.value })} />
-              <input className="input" value={grant.group ?? ""} placeholder={t("native.group")} onChange={(e) => updateGrant(index, { group: e.target.value || undefined })} />
-              <input className="input" value={grant.upstream_prefix ?? ""} placeholder={t("native.upstreamPrefix")} onChange={(e) => updateGrant(index, { upstream_prefix: e.target.value || undefined })} />
-              <input className="input" value={(grant.accepted_prefixes ?? []).join(", ")} placeholder={t("native.acceptedPrefixes")} onChange={(e) => updateGrant(index, { accepted_prefixes: e.target.value.split(",").map((v) => v.trim()).filter(Boolean) })} />
-              <input className="input" value={(grant.accepted_models ?? []).join(", ")} placeholder={t("native.acceptedModels")} onChange={(e) => updateGrant(index, { accepted_models: e.target.value.split(",").map((v) => v.trim()).filter(Boolean) })} />
+              <input className="input" list={`native-providers-${index}`} value={grant.provider} placeholder={t("native.provider")} onChange={(e) => updateGrant(index, { provider: e.target.value })} />
+              <datalist id={`native-providers-${index}`}>
+                <option value="*" />
+                {[...new Set(catalog.map((item) => item.provider))].map((provider) => <option value={provider} key={provider} />)}
+              </datalist>
+              <input className="input" list={`native-models-${index}`} value={grant.model} placeholder={t("native.model")} onChange={(e) => updateGrant(index, { model: e.target.value })} />
+              <datalist id={`native-models-${index}`}>
+                {[...new Set(catalog.filter((item) => grant.provider === "*" || item.provider === grant.provider).map((item) => item.model))].map((model) => <option value={model} key={model} />)}
+              </datalist>
+              <input className="input" list={`native-groups-${index}`} value={grant.group ?? ""} placeholder={t("native.group")} onChange={(e) => updateGrant(index, { group: e.target.value || undefined })} />
+              <datalist id={`native-groups-${index}`}>
+                {[...new Set(catalog.filter((item) => (grant.provider === "*" || item.provider === grant.provider) && (!grant.model || item.model === grant.model)).map((item) => item.group).filter((group): group is string => !!group))].map((group) => <option value={group} key={group} />)}
+              </datalist>
             </div>
             <button className="btn sm danger-outline" onClick={() => setPolicy({ ...policy, grants: policy.grants.filter((_, i) => i !== index) })}>{t("keys.delete")}</button>
           </div>

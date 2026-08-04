@@ -1,6 +1,6 @@
 {
   "header": {
-    "title": "cpa-key-policy 管理面板",
+    "title": "金鑰權限管理",
     "keyList": "Key 列表",
     "newKey": "新建 Key",
     "logout": "登出"
@@ -22,15 +22,16 @@
     "restoring": "正在從面板還原工作階段…"
   },
   "native": {
-    "title": "原生 Key 權限",
+    "title": "金鑰權限",
     "identityHint": "身分直接來自 CPA api-keys；外掛只維護權限與額度，不簽發第二把 Key。",
     "unmanaged": "尚未設定策略",
     "edit": "權限與額度",
-    "editTitle": "編輯原生 Key 策略",
+    "editTitle": "編輯金鑰權限",
     "enabled": "允許此 Key 發起請求",
     "provider": "提供商（支援 *）",
     "model": "標準模型（支援 * 和 ?）",
     "group": "憑證群組（例如 classify:csil）",
+    "upstreamOpaqueHint": "客戶端一律使用規範模型名稱。提供者與憑證群組只在伺服器端篩選上游，客戶端不能用前綴指定上游。",
     "upstreamPrefix": "CPA 原生前綴（例如 codex-csil）",
     "acceptedPrefixes": "相容舊前綴，以逗號分隔",
     "acceptedModels": "相容舊模型全名，以逗號分隔",

@@ -16,7 +16,7 @@ const (
 	MethodFrontendAuthIdentifier   = "frontend_auth.identifier"
 	MethodFrontendAuthAuthenticate = "frontend_auth.authenticate"
 
-	MethodModelRoute = "model.route"
+	MethodModelRoute         = "model.route"
 	MethodModelCatalogFilter = "model.catalog_filter"
 
 	MethodResponseInterceptAfter = "response.intercept_after"
@@ -43,7 +43,7 @@ const (
 
 const (
 	PluginID   = "cpa-key-policy"
-	PluginName = "cpa-key-policy"
+	PluginName = "CPA Key Access"
 	Version    = "0.5.0-native-access-dev"
 )
 

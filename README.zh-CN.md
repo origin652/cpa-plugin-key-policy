@@ -109,6 +109,28 @@ Windows 上请用 WSL/Linux 编 `.so`。`go test ./...` 可用非 cgo stub，不
 
 ## 配置
 
+### 原生密钥权限模式
+
+`native-access` 直接使用 CPA `api-keys` 作为唯一客户端身份；插件只保存
+密钥哈希、权限、额度和计数，不再签发第二套密钥。
+
+客户端始终使用规范模型名：
+
+```json
+{
+  "provider": "codex",
+  "model": "gpt-5.6-*",
+  "group": "classify:csil"
+}
+```
+
+客户端只发送 `gpt-5.6-sol`。插件在服务端把候选凭证限制到
+`classify:csil`；若没有健康候选则关闭式失败，不会越权回退到其他账号。
+同一规范模型可配置多条权限形成允许候选集合；若所有可用候选都获准，
+插件会把选择权交还 CPA 自身的优先级、填充优先 / 轮询和会话粘性策略。
+客户端不能使用 `provider/model` 或旧横杠别名指定上游，上游对客户端完全
+无感。
+
 最小形态（完整示例见 [`config.example.yaml`](./config.example.yaml)）：
 
 ```yaml
@@ -244,4 +266,3 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/aliases" \
 go test ./...
 cd web && npm test && npm run build
 ```
-

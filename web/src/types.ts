@@ -153,9 +153,6 @@ export interface NativeGrant {
   provider: string;
   model: string;
   group?: string;
-  upstream_prefix?: string;
-  accepted_prefixes?: string[];
-  accepted_models?: string[];
 }
 
 export interface NativePolicy {

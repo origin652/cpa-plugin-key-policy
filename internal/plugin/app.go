@@ -189,12 +189,6 @@ func (a *App) authenticate(raw []byte) ([]byte, error) {
 			"key_hash":        decision.KeyHash,
 			"requested_model": decision.Model,
 		}
-		if decision.Provider != "" {
-			metadata["authorized_provider"] = decision.Provider
-		}
-		if decision.Group != "" {
-			metadata["group"] = decision.Group
-		}
 		return OKEnvelope(FrontendAuthResponse{
 			Authenticated: true,
 			Principal:     decision.Principal,
@@ -243,17 +237,13 @@ func (a *App) routeModel(raw []byte) ([]byte, error) {
 	}
 	if a.nativeMode {
 		rawKey := policy.ExtractAPIKey(req.Headers, req.Query)
-		decision, authorized := a.native.Route(rawKey, req.RequestedModel)
-		if !authorized || decision.Provider == "*" {
+		_, authorized := a.native.Route(rawKey, req.RequestedModel)
+		if !authorized {
 			return OKEnvelope(ModelRouteResponse{Handled: false})
 		}
-		return OKEnvelope(ModelRouteResponse{
-			Handled:     true,
-			TargetKind:  "provider",
-			Target:      resolveProviderKey(decision.Provider, req.AvailableProviders),
-			TargetModel: decision.TargetModel,
-			Reason:      "cpa-key-policy:native-provider-and-prefix-constraint",
-		})
+		// Keep the canonical client model untouched. scheduler.pick owns the
+		// server-side candidate filtering and the upstream remains invisible.
+		return OKEnvelope(ModelRouteResponse{Handled: false})
 	}
 	rule, keyID, ok := a.store.Route(req.Headers, req.Query, req.RequestedModel)
 	if !ok {
@@ -357,6 +347,9 @@ func (a *App) pickScheduler(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	if a.nativeMode {
+		return a.pickNativeScheduler(req)
+	}
 	group := schedulerGroupFromMetadata(req.Options.Metadata)
 	if group == "" {
 		// No tier narrowed by this downstream key → let the host pick freely.
@@ -389,6 +382,57 @@ func (a *App) pickScheduler(raw []byte) ([]byte, error) {
 		if cand.Priority > best.Priority ||
 			(cand.Priority == best.Priority && cand.ID < best.ID) {
 			best = cand
+		}
+	}
+	return OKEnvelope(SchedulerPickResponse{Handled: true, AuthID: best.ID})
+}
+
+func (a *App) pickNativeScheduler(req SchedulerPickRequest) ([]byte, error) {
+	keyHash := schedulerMetadataString(req.Options.Metadata, "key_hash")
+	requestedModel := schedulerMetadataString(req.Options.Metadata, "requested_model")
+	if requestedModel == "" {
+		requestedModel = strings.TrimSpace(req.Model)
+	}
+	if keyHash == "" || requestedModel == "" {
+		return OKEnvelope(SchedulerPickResponse{Handled: false})
+	}
+	grants, ok := a.native.SchedulerGrants(keyHash, requestedModel)
+	if !ok {
+		return ErrorEnvelope("auth_not_found", "cpa-key-policy: no policy grants for canonical model", http.StatusServiceUnavailable), nil
+	}
+
+	usable := make([]SchedulerAuthCandidate, 0, len(req.Candidates))
+	eligible := make([]SchedulerAuthCandidate, 0, len(req.Candidates))
+	for _, candidate := range req.Candidates {
+		if !schedulerCandidateUsable(candidate.Status) {
+			continue
+		}
+		usable = append(usable, candidate)
+		for _, grant := range grants {
+			if !nativeaccess.ProviderMatchesCandidate(grant.Provider, candidate.Provider) {
+				continue
+			}
+			if grant.Group != "" && !a.candidateMatchesGroup(candidate, strings.ToLower(strings.TrimSpace(grant.Group))) {
+				continue
+			}
+			eligible = append(eligible, candidate)
+			break
+		}
+	}
+	if len(eligible) == 0 {
+		return ErrorEnvelope("auth_not_found", "cpa-key-policy: no eligible auth candidate for key policy", http.StatusServiceUnavailable), nil
+	}
+	if len(eligible) == len(usable) {
+		// The policy did not remove any usable candidate. Preserve CPA's own
+		// fill-first/round-robin/priority/session-affinity behavior.
+		return OKEnvelope(SchedulerPickResponse{Handled: false})
+	}
+
+	best := eligible[0]
+	for _, candidate := range eligible[1:] {
+		if candidate.Priority > best.Priority ||
+			(candidate.Priority == best.Priority && candidate.ID < best.ID) {
+			best = candidate
 		}
 	}
 	return OKEnvelope(SchedulerPickResponse{Handled: true, AuthID: best.ID})
@@ -539,10 +583,14 @@ func builtInGroup(cand SchedulerAuthCandidate) string {
 // schedulerGroupFromMetadata reads the group stamped at authenticate time out
 // of request-provided scheduler options. Tolerates string or any-typed values.
 func schedulerGroupFromMetadata(meta map[string]any) string {
+	return schedulerMetadataString(meta, "group")
+}
+
+func schedulerMetadataString(meta map[string]any, key string) string {
 	if meta == nil {
 		return ""
 	}
-	raw, ok := meta["group"]
+	raw, ok := meta[key]
 	if !ok || raw == nil {
 		return ""
 	}
@@ -598,7 +646,7 @@ func (a *App) managementRegistration() ManagementRegistrationResponse {
 				{Method: http.MethodGet, Path: base + "/status", Description: "Show native access-policy runtime status."},
 			},
 			Resources: []ResourceRoute{
-				{Path: web.IndexPath, Menu: "Key Policy", Description: "Manage access and quotas for CPA native API keys."},
+				{Path: web.IndexPath, Menu: "密钥权限", Description: "Manage access and quotas for CPA native API keys."},
 			},
 		}
 	}
@@ -623,7 +671,7 @@ func (a *App) managementRegistration() ManagementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/catalog", Description: "Build auth-file model picker catalog with classify + built-in groups."},
 		},
 		Resources: []ResourceRoute{
-			{Path: web.IndexPath, Menu: "Key Policy", Description: "Web UI for managing downstream CPA key policies (create keys, pick models)."},
+			{Path: web.IndexPath, Menu: "密钥权限", Description: "Web UI for managing downstream CPA key policies (create keys, pick models)."},
 		},
 	}
 }

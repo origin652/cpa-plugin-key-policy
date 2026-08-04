@@ -9,7 +9,7 @@ import (
 	"cpa-key-policy/internal/nativeaccess"
 )
 
-func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
+func TestNativeCanonicalModelAndServerSideCredentialGroup(t *testing.T) {
 	dir := t.TempDir()
 	keysFile := filepath.Join(dir, "config.yaml")
 	stateFile := filepath.Join(dir, "native-state.json")
@@ -82,15 +82,12 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 		t.Fatalf("native resource UI unavailable: %#v", resource)
 	}
 
-	requests := map[string]string{
-		"gpt-5.6-sol":                    "codex-csil/gpt-5.6-sol",
-		"codex-csil/gpt-5.6-sol":         "codex-csil/gpt-5.6-sol",
-		"codex-csil-gpt-5.6-sol":         "codex-csil/gpt-5.6-sol",
-		"codex-csil-gpt-5.6-terra":       "codex-csil/gpt-5.6-terra",
-		"codex-csil-gpt-5.6-luna":        "codex-csil/gpt-5.6-luna",
-		"codex-csil-gpt-5.3-codex-spark": "codex-csil/gpt-5.3-codex-spark",
-	}
-	for requested, expectedTarget := range requests {
+	for _, requested := range []string{
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+		"gpt-5.3-codex-spark",
+	} {
 		body := []byte(`{"model":"` + requested + `"}`)
 		authRequest, _ := json.Marshal(FrontendAuthRequest{
 			Method:  "POST",
@@ -107,8 +104,7 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !auth.Authenticated || auth.Principal != key ||
-			auth.Metadata["key_hash"] != nativeaccess.HashKey(key) ||
-			auth.Metadata["group"] != "classify:csil" {
+			auth.Metadata["key_hash"] != nativeaccess.HashKey(key) {
 			t.Fatalf("unexpected auth for %q: %#v", requested, auth)
 		}
 
@@ -125,14 +121,38 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 		if err := unmarshalOK(rawRoute, &route); err != nil {
 			t.Fatal(err)
 		}
-		if !route.Handled || route.Target != "codex" || route.TargetModel != expectedTarget {
+		if route.Handled {
 			t.Fatalf("unexpected route for %q: %#v", requested, route)
+		}
+	}
+	for _, requested := range []string{
+		"codex-csil/gpt-5.6-sol",
+		"codex-csil-gpt-5.6-sol",
+	} {
+		body := []byte(`{"model":"` + requested + `"}`)
+		authRequest, _ := json.Marshal(FrontendAuthRequest{
+			Method:  "POST",
+			Path:    "/v1/responses",
+			Headers: map[string][]string{"Authorization": {"Bearer " + key}},
+			Body:    body,
+		})
+		rawAuth, _ := app.HandleMethod(MethodFrontendAuthAuthenticate, authRequest)
+		var auth FrontendAuthResponse
+		if err := unmarshalOK(rawAuth, &auth); err != nil {
+			t.Fatal(err)
+		}
+		if auth.Authenticated {
+			t.Fatalf("client upstream selector %q must be denied: %#v", requested, auth)
 		}
 	}
 
 	schedulerRequest, _ := json.Marshal(SchedulerPickRequest{
 		Provider: "codex",
-		Options:  SchedulerPickOptions{Metadata: map[string]any{"group": "classify:csil"}},
+		Model:    "gpt-5.6-sol",
+		Options: SchedulerPickOptions{Metadata: map[string]any{
+			"key_hash":        nativeaccess.HashKey(key),
+			"requested_model": "gpt-5.6-sol",
+		}},
 		Candidates: []SchedulerAuthCandidate{
 			{ID: "codex-dongwu.json", Provider: "codex"},
 			{ID: "codex-csil.json", Provider: "codex"},

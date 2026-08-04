@@ -49,7 +49,7 @@ describe("translate", () => {
     // key and assert fallback path by requesting a locale that lacks it.
     _resetLocale("en");
     // 'header.title' exists in en, so this is NOT a fallback case — sanity.
-    expect(translate("header.title")).toBe("cpa-key-policy Management");
+    expect(translate("header.title")).toBe("Key Access Management");
     // A genuinely unknown key returns the key itself (never empty).
     expect(translate("nonexistent.deep.key")).toBe("nonexistent.deep.key");
   });
