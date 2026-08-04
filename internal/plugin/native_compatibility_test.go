@@ -84,6 +84,7 @@ func TestNativeCompatibilityPrefixAndCredentialGroup(t *testing.T) {
 
 	requests := map[string]string{
 		"gpt-5.6-sol":                    "codex-csil/gpt-5.6-sol",
+		"codex-csil/gpt-5.6-sol":         "codex-csil/gpt-5.6-sol",
 		"codex-csil-gpt-5.6-sol":         "codex-csil/gpt-5.6-sol",
 		"codex-csil-gpt-5.6-terra":       "codex-csil/gpt-5.6-terra",
 		"codex-csil-gpt-5.6-luna":        "codex-csil/gpt-5.6-luna",

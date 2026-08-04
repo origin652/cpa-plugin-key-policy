@@ -73,6 +73,12 @@ type Decision struct {
 	Reason      string
 }
 
+type grantMatch struct {
+	grant          Grant
+	canonicalModel string
+	score          int
+}
+
 type nativeConfig struct {
 	APIKeys []string `yaml:"api-keys"`
 }
@@ -297,6 +303,126 @@ func targetModel(grant Grant, canonicalModel string) string {
 		return canonicalModel
 	}
 	return grant.UpstreamPrefix + "/" + canonicalModel
+}
+
+func splitNativeModelPrefix(requestedModel string) (prefix, model string, explicit bool) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	prefix, model, explicit = strings.Cut(requestedModel, "/")
+	prefix = strings.TrimSpace(prefix)
+	model = strings.TrimSpace(model)
+	if !explicit || prefix == "" || model == "" {
+		return "", requestedModel, false
+	}
+	return strings.Trim(prefix, "/"), model, true
+}
+
+func matchingGrants(policy Policy, requestedModel string, explicitPrefix string) []grantMatch {
+	matches := make([]grantMatch, 0, len(policy.Grants))
+	bestScore := -1
+	for _, grant := range policy.Grants {
+		if explicitPrefix != "" && !strings.EqualFold(grant.UpstreamPrefix, explicitPrefix) {
+			continue
+		}
+		canonicalModel, score, matched := matchGrant(grant, requestedModel)
+		if !matched {
+			continue
+		}
+		if score > bestScore {
+			matches = matches[:0]
+			bestScore = score
+		}
+		if score == bestScore {
+			matches = append(matches, grantMatch{
+				grant:          grant,
+				canonicalModel: canonicalModel,
+				score:          score,
+			})
+		}
+	}
+	return matches
+}
+
+// routeDecision separates authorization from CPA's own credential scheduler.
+//
+//   - An explicit native "prefix/model" request must match a grant carrying
+//     exactly that upstream_prefix.
+//   - A provider-wide grant (no group/prefix) delegates credential selection
+//     to CPA for that provider.
+//   - A global "* / model" grant delegates provider and credential selection
+//     to CPA unchanged.
+//   - One account-scoped grant is safely normalized to its native prefix.
+//   - Multiple account-scoped grants are ambiguous without an explicit prefix
+//     and fail closed instead of selecting the first sorted grant.
+func routeDecision(policy Policy, requestedModel string) Decision {
+	explicitPrefix, baseModel, explicit := splitNativeModelPrefix(requestedModel)
+	matches := matchingGrants(policy, baseModel, explicitPrefix)
+	if len(matches) == 0 {
+		return Decision{Model: baseModel, Reason: "model_not_allowed"}
+	}
+
+	if explicit {
+		selected := matches[0]
+		return Decision{
+			Allowed:     true,
+			Provider:    selected.grant.Provider,
+			Model:       selected.canonicalModel,
+			TargetModel: targetModel(selected.grant, selected.canonicalModel),
+			Group:       selected.grant.Group,
+			Reason:      "allowed_explicit_upstream",
+		}
+	}
+
+	for _, match := range matches {
+		if match.grant.Provider == "*" && match.grant.Group == "" && match.grant.UpstreamPrefix == "" {
+			return Decision{
+				Allowed:     true,
+				Provider:    "*",
+				Model:       match.canonicalModel,
+				TargetModel: match.canonicalModel,
+				Reason:      "allowed_all_upstreams",
+			}
+		}
+	}
+
+	providerWide := make(map[string]grantMatch)
+	accountScoped := make([]grantMatch, 0, len(matches))
+	for _, match := range matches {
+		if match.grant.Group == "" && match.grant.UpstreamPrefix == "" {
+			providerWide[match.grant.Provider] = match
+			continue
+		}
+		accountScoped = append(accountScoped, match)
+	}
+	if len(providerWide) == 1 {
+		for _, selected := range providerWide {
+			return Decision{
+				Allowed:     true,
+				Provider:    selected.grant.Provider,
+				Model:       selected.canonicalModel,
+				TargetModel: selected.canonicalModel,
+				Reason:      "allowed_provider_scheduler",
+			}
+		}
+	}
+	if len(providerWide) > 1 {
+		return Decision{Model: baseModel, Reason: "ambiguous_upstream_prefix_required"}
+	}
+
+	if len(accountScoped) == 1 {
+		selected := accountScoped[0]
+		if selected.grant.UpstreamPrefix == "" {
+			return Decision{Model: baseModel, Reason: "upstream_prefix_required"}
+		}
+		return Decision{
+			Allowed:     true,
+			Provider:    selected.grant.Provider,
+			Model:       selected.canonicalModel,
+			TargetModel: targetModel(selected.grant, selected.canonicalModel),
+			Group:       selected.grant.Group,
+			Reason:      "allowed_unique_upstream",
+		}
+	}
+	return Decision{Model: baseModel, Reason: "ambiguous_upstream_prefix_required"}
 }
 
 func (s *Store) refreshKeysLocked(force bool) error {
@@ -619,21 +745,16 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 		decision.Reason = "models_endpoint_allowed"
 		return decision
 	}
-	bestScore := -1
-	for _, grant := range policy.Grants {
-		canonicalModel, score, matched := matchGrant(grant, model)
-		if matched && score > bestScore {
-			decision.Provider = grant.Provider
-			decision.Model = canonicalModel
-			decision.TargetModel = targetModel(grant, canonicalModel)
-			decision.Group = grant.Group
-			bestScore = score
-		}
-	}
-	if decision.Provider == "" {
-		decision.Reason = "model_not_allowed"
+	route := routeDecision(policy, model)
+	if !route.Allowed {
+		decision.Model = route.Model
+		decision.Reason = route.Reason
 		return decision
 	}
+	decision.Provider = route.Provider
+	decision.Model = route.Model
+	decision.TargetModel = route.TargetModel
+	decision.Group = route.Group
 	now := s.now()
 	u := s.usageByHash[hash]
 	if u == nil {
@@ -676,7 +797,7 @@ func (s *Store) Authenticate(rawKey, model string, modelsEndpoint bool) Decision
 	u.Weekly.Calls++
 	s.dirty = true
 	decision.Allowed = true
-	decision.Reason = "allowed"
+	decision.Reason = route.Reason
 	return decision
 }
 
@@ -701,19 +822,9 @@ func (s *Store) Route(rawKey, model string) (Decision, bool) {
 	if !exists || !policy.Enabled {
 		return Decision{}, false
 	}
-	decision := Decision{Known: true, Principal: hash}
-	bestScore := -1
-	for _, grant := range policy.Grants {
-		canonicalModel, score, matched := matchGrant(grant, model)
-		if matched && score > bestScore {
-			decision.Provider = grant.Provider
-			decision.Model = canonicalModel
-			decision.TargetModel = targetModel(grant, canonicalModel)
-			decision.Group = grant.Group
-			bestScore = score
-		}
-	}
-	decision.Allowed = bestScore >= 0
+	decision := routeDecision(policy, model)
+	decision.Known = true
+	decision.Principal = hash
 	return decision, decision.Allowed
 }
 
@@ -780,6 +891,9 @@ func (s *Store) FilterModels(rawKey string, models []map[string]any, modelProvid
 				continue
 			}
 			appendModel(model, canonicalID)
+			if grant.UpstreamPrefix != "" {
+				appendModel(model, grant.UpstreamPrefix+"/"+canonicalID)
+			}
 			for _, acceptedModel := range grant.AcceptedModels {
 				appendModel(model, acceptedModel)
 			}
