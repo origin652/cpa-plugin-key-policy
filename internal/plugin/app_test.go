@@ -100,6 +100,70 @@ func TestAppAuthenticationAndRoute(t *testing.T) {
 	}
 }
 
+func TestAppNativeRouteDelegatesToHost(t *testing.T) {
+	app := NewApp()
+	plain := "cpa_native_route_test"
+	hash := hashForTest(t, plain)
+	yaml := []byte(`
+enabled: true
+state_file: "` + filepath.ToSlash(filepath.Join(t.TempDir(), "state.json")) + `"
+keys:
+  - id: native-route
+    enabled: true
+    key_hash: "` + hash + `"
+    models:
+      - alias: gpt-6-astra
+        provider: native
+        target_model: gpt-6-astra
+`)
+	reconfigure, _ := json.Marshal(LifecycleRequest{ConfigYAML: yaml})
+	if _, err := app.HandleMethod(MethodPluginReconfigure, reconfigure); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	routeReq, _ := json.Marshal(ModelRouteRequest{
+		RequestedModel: "gpt-6-astra",
+		Headers:        http.Header{"Authorization": {"Bearer " + plain}},
+	})
+	raw, err := app.HandleMethod(MethodModelRoute, routeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var routeResp ModelRouteResponse
+	if err := json.Unmarshal(env.Result, &routeResp); err != nil {
+		t.Fatal(err)
+	}
+	if routeResp.Handled {
+		t.Fatalf("route response = %+v, want host-native routing", routeResp)
+	}
+
+	schedulerReq, _ := json.Marshal(SchedulerPickRequest{
+		Model: "gpt-6-astra",
+		Options: SchedulerPickOptions{
+			Headers: map[string][]string{"Authorization": {"Bearer " + plain}},
+		},
+		Candidates: []SchedulerAuthCandidate{{ID: "codex-auth", Provider: "codex"}},
+	})
+	raw, err = app.HandleMethod(MethodSchedulerPick, schedulerReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var schedulerResp SchedulerPickResponse
+	if err := json.Unmarshal(env.Result, &schedulerResp); err != nil {
+		t.Fatal(err)
+	}
+	if schedulerResp.Handled {
+		t.Fatalf("scheduler response = %+v, want host-native scheduling", schedulerResp)
+	}
+}
+
 func TestAppModelsEndpointDenied(t *testing.T) {
 	app, plain := configureTestApp(t)
 	authReq, _ := json.Marshal(FrontendAuthRequest{
