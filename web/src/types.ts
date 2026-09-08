@@ -88,7 +88,7 @@ export interface KeyWriteRequest {
 
 export interface CreateKeyResponse {
   key: KeyPublic;
-  plain_key: string;
+  plain_key?: string;
   generated: boolean;
 }
 

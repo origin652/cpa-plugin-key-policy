@@ -88,6 +88,7 @@
     "accountBindingAllowPlaceholder": "codex-team-*.json",
     "accountBindingStrategyLabel": "允許池內排程策略",
     "accountBindingHint": "啟用後留空代表禁止所有帳號。受保護請求必須使用 Header key；無匹配時會失敗關閉，不會退回全域帳號池。",
+    "nativeBindingHint": "這是匯入的 CPA 原生 key，仍由宿主驗證與模型路由。此處只編輯啟用狀態及必填帳號綁定；請在 CPA 輪換後重新匯入新密鑰。",
     "modelsLabel": "允許的模型（多選，別名自動 = 模型名）",
     "priceLabel": "模型單價（美元 / 每百萬 token；留 0 = 不計費）",
     "colAlias": "別名",

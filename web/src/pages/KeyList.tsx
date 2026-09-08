@@ -91,8 +91,8 @@ export default function KeyList() {
               key={k.id}
               k={k}
               onDelete={onDelete}
-              onRotate={onRotate}
-              onReset={onReset}
+              onRotate={k.native ? undefined : onRotate}
+              onReset={k.native ? undefined : onReset}
             />
           ))}
         </div>

@@ -93,6 +93,7 @@
     "accountBindingAllowPlaceholder": "codex-team-*.json",
     "accountBindingStrategyLabel": "Strategy inside the allowed pool",
     "accountBindingHint": "An enabled empty list denies every account. Protected requests require a Header key; no match fails closed instead of using the global pool.",
+    "nativeBindingHint": "This imported CPA key keeps host authentication and model routing. Only its enabled state and mandatory account binding are editable here; rotate it in CPA and re-import the secret when it changes.",
     "modelsLabel": "Allowed models (multi-select, alias auto = model name)",
     "priceLabel": "Model unit price (USD / per million tokens; 0 = not billed)",
     "colAlias": "Alias",

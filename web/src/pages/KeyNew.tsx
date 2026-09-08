@@ -49,7 +49,7 @@ export default function KeyNew() {
             account_binding: v.account_binding,
             clear_account_binding: v.clear_account_binding,
           });
-          setPlain(r.plain_key);
+          if (r.plain_key) setPlain(r.plain_key);
         }}
       />
       <p className="fp-note mobile-hidden">{t("login.memoryNote")}</p>

@@ -83,8 +83,8 @@ export default function KeyEdit() {
       <div className="fp-head mobile-hidden">
         <h1>{t("edit.hTitle")}</h1>
         <div className="fp-actions">
-          <button className="btn sm" onClick={onReset}>{t("keys.resetRpm")}</button>
-          <button className="btn sm" onClick={onRotate}>{t("keys.rotate")}</button>
+          {!key.native && <button className="btn sm" onClick={onReset}>{t("keys.resetRpm")}</button>}
+          {!key.native && <button className="btn sm" onClick={onRotate}>{t("keys.rotate")}</button>}
           <button className="btn sm" onClick={() => nav("/keys")}>{t("keyForm.cancel")}</button>
         </div>
       </div>
@@ -95,7 +95,7 @@ export default function KeyEdit() {
       <KeyForm
         initial={initial}
         idReadOnly
-        pickPath={`/keys/${encodeURIComponent(key.id)}/edit/models`}
+        pickPath={key.native ? undefined : `/keys/${encodeURIComponent(key.id)}/edit/models`}
         submitLabel={t("edit.save")}
         onCancel={() => nav("/keys")}
         dangerLabel={t("keys.delete")}
