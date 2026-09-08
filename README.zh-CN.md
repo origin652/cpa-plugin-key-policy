@@ -58,14 +58,30 @@ Key 可以**引用**别名，不必重复填目标。多目标别名会展开成
 
 **运行时规则：** 映射里写了 group，调度就**只**在该组凭证里选文件。没有可用文件 → 直接失败（`auth_not_found`），**绝不**偷偷落到其他档。
 
-**调度：** 插件先保留可用凭证中 `Priority` 最高的一层，再按凭证的 `weight` 执行**平滑加权轮询**：
+**调度：** 插件先应用全部账号约束，再保留交集中 `Priority` 最高的一层并执行池内策略：
 
 - 权重来自 CPA 凭证配置，插件兼容候选的 `Weight`、`Attributes.weight` 和 `Metadata.weight`。
 - 未配置或无法解析时按 `1` 处理；非正数表示暂停接收新请求；最大按 `1000000` 处理。
-- 轮询状态按 `provider + model + group + Priority` 全局共享，所有 `cpa_…` key 共用同一分配比例。group 为空时，CPA 为该 provider/model 提供的全部候选凭证形成一个全局池。
+- 调度状态按下游 key + provider + model + group + Priority 隔离；绑定不同账号池的 key 不共用游标。
 - 低 `Priority` 凭证仅在更高优先级凭证全部不可用或权重非正时参与。
-- CPA 未转发前端鉴权 group 元数据时（包括 CPA `7.2.140`），插件自有密钥仍会执行全局加权轮询，不再回退到 CPA 的 `routing.strategy`；CPA 原生密钥不受影响。
-- 设置 `global_weighted_round_robin: true` 后，即使 CPA 能转发 group，插件也会主动忽略它，并在当前 provider/model 的全部候选凭证中按 Weight 调度。
+- CPA 没有转发前端鉴权 metadata 时，插件会用 Header key、`requested_model` 和最终 provider/model 恢复唯一 group。信息缺失或目标歧义时直接失败，不会退回全池。
+- `global_weighted_round_robin: true` 只保留未绑定插件 key 的旧有“忽略 group”行为；显式 `account_binding` 及其目标 group 永远优先。
+
+### 失败关闭的账号绑定
+
+每个 key 可配置 `account_binding.allow`，使用 Go `path.Match` 对 CPA 凭证候选 ID 做大小写敏感的 glob 匹配。字段存在但 allow 为空表示“不允许任何账号”，不等于未配置绑定。
+
+```yaml
+account_binding:
+  allow: ["codex-team-*.json", "openai-compatibility:corp:*"]
+  strategy: weighted-round-robin # weighted-round-robin | round-robin | fill-first
+```
+
+调度器依次取账号绑定、唯一目标 group、provider、状态、正权重与最高 Priority 的交集。交集为空返回 `auth_not_bound`，不会 `Handled:false`，也不会委托 CPA 全局池。受绑定请求必须把配置的 key 放在 Header；仅 query 传 key 或 Header 凭证冲突会在访问上游前终止。
+
+CPA 原生 key 默认完全不受影响；只有显式以 `native: true` 导入后才接管其账号绑定。导入只保存普通 key hash 与 CPA 的不可逆 `caller_scope`，不会保存或回显第二份明文。原生 key 仍由宿主鉴权和模型路由，但绑定由本插件强制执行。只有未被绑定接管的原生 key 才继续使用宿主 session affinity；插件自己返回 AuthID 的 RR/WRR 不会自动继承亲和性。
+
+**运行边界：** 这是纯插件控制。账号绑定流量必须保持插件启用且健康，也不能使用 CPA Home 模式，因为 Home 会在普通插件 scheduler 之前完成选择。若插件被卸载或熔断，仍留在 CPA `api-keys` 中的原生 key 会重新只受宿主全局账号池控制。若要求插件被移除时也尽量失败关闭，请使用插件签发的 key，并且绝不要把它重复放进 CPA `api-keys`。
 
 **自定义归类**（网页 → 映射 → 凭证归类）：
 
@@ -90,7 +106,8 @@ CPA 里配置的兼容通道，映射时 `provider` 填通道 **name**。插件�
 |------|------|
 | 前端鉴权 | 识别插件 key；校验别名、RPM、额度；写入路由与 group 元数据 |
 | 模型路由 | 别名 → provider + 目标模型 |
-| 调度 | 可选按 group 档位 / `classify:` 过滤，并在最高 Priority 层内平滑加权轮询 |
+| 请求拦截 | 受绑定 key 仅 query 传参或 Header 凭证冲突时，在访问上游前拒绝 |
+| 调度 | 取 key 绑定与目标 group 的交集，失败关闭，再在最高 Priority 层内执行 WRR/RR/fill-first |
 | 响应拦截 | 非流式 JSON：把顶层 `model` 改回别名 |
 | 用量 | token / 按次计费写入 state |
 | 管理 API + 内嵌网页 | Key、别名、归类、状态 |
@@ -135,8 +152,7 @@ plugins:
 说明：
 
 - 若已有 `state_file`，则以其中的 keys / 别名 / 归类 / 用量为准。
-- `global_weighted_round_robin: true` 会忽略别名目标选中的 group，把当前 provider/model 的所有候选凭证放入同一个全局权重池。默认为 `false`。
-- 开启该选项后，别名层的 group 仍会轮询，但不再限制最终凭证；分配比例只由 CPA 凭证页的 Weight 决定。
+- `global_weighted_round_robin: true` 只会让未绑定的插件 key 忽略目标 group；显式账号绑定始终保持限制。默认为 `false`。
 - 日常请用**网页**或管理 API 建 key 和别名；YAML 种子数据主要用于首次启动。
 - 公开文档里不要写真实管理密钥、主机名或凭证内容。
 
@@ -193,9 +209,30 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/keys" \
     "id": "team-a",
     "name": "Team A",
     "rpm": 60,
+    "account_binding": {
+      "allow": ["codex-team-*.json"],
+      "strategy": "weighted-round-robin"
+    },
     "models": [
       {"alias":"fast","provider":"codex","target_model":"gpt-5.4-mini","group":"free"}
     ]
+  }'
+```
+
+导入已有 CPA 原生 key 做账号绑定（该 key 仍须存在于 CPA `api-keys`；响应不会回显它）：
+
+```bash
+curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/keys" \
+  -H "Authorization: Bearer $MANAGEMENT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "native-team-a",
+    "native": true,
+    "key": "existing-cpa-api-key",
+    "account_binding": {
+      "allow": ["openai-compatibility:corp:*"],
+      "strategy": "round-robin"
+    }
   }'
 ```
 
@@ -226,6 +263,8 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/aliases" \
 | 不允许的模型名 | 鉴权失败 |
 | 超 RPM / 额度 | 拒绝 |
 | 写了 group 但组内无可用凭证 | `auth_not_found` / 不可用（不串档） |
+| 账号绑定在宿主候选中没有可用账号 | `auth_not_bound` / 不可用，不回退全池 |
+| 绑定 key 仅放 query，或 Header 凭证冲突 | 访问上游前拒绝 |
 | 不认识的 key | 插件放弃，CPA 可尝试原生 `api-keys` |
 | 非流式对话响应 | 顶层 `model` 改回别名 |
 | 流式 | v1 不改写 body |
@@ -244,7 +283,7 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/aliases" \
 3. 用管理密钥打开网页 UI。  
 4. （可选）配置**凭证归类**规则。  
 5. 建**别名**（多目标/定价）和/或给 key 勾选模型（含档位或「自定义 · …」）。  
-6. 创建 key，保存一次性 `plain_key`，发给客户。  
+6. 创建 key，按需配置账号绑定 glob，保存一次性 `plain_key`，发给客户。
 7. 客户：OpenAI 兼容 base URL = CPA；`Bearer cpa_…`；`model` = 别名。  
 8. openai-compat 通道务必声明 models，否则会「无 auth」。
 
@@ -256,4 +295,3 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/aliases" \
 go test ./...
 cd web && npm test && npm run build
 ```
-

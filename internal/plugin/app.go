@@ -19,6 +19,7 @@ type App struct {
 	classifyCache map[string][]string
 	schedulerMu   sync.Mutex
 	schedulerRR   map[string]*smoothWeightedState
+	schedulerCursor map[string]string
 }
 
 const classifyCacheCapacity = 4096
@@ -30,6 +31,7 @@ func NewApp() *App {
 		store:         store,
 		classifyCache: make(map[string][]string),
 		schedulerRR:   make(map[string]*smoothWeightedState),
+		schedulerCursor: make(map[string]string),
 	}
 }
 
@@ -52,6 +54,10 @@ func (a *App) handleMethod(method string, request []byte) ([]byte, error) {
 		return a.authenticate(request)
 	case MethodModelRoute:
 		return a.routeModel(request)
+	case MethodRequestInterceptBefore:
+		return a.interceptRequestBefore(request)
+	case MethodRequestInterceptAfter:
+		return OKEnvelope(RequestInterceptResponse{})
 	case MethodSchedulerPick:
 		return a.pickScheduler(request)
 	case MethodResponseInterceptAfter:
@@ -119,7 +125,7 @@ func (a *App) registration() Registration {
 				{Name: "enabled", Type: "boolean", Description: "Enable or disable this plugin without unloading it."},
 				{Name: "state_file", Type: "string", Description: "JSON state file used for key policy changes made through the Management API."},
 				{Name: "global_weighted_round_robin", Type: "boolean", Description: "忽略别名目标的 group，对当前 provider/model 的全部候选凭证执行全局加权轮询。"},
-				{Name: "keys", Type: "array", Description: "Initial downstream key policy list. State file wins after it exists."},
+				{Name: "keys", Type: "array", Description: "Downstream key policies, including optional fail-closed account_binding allow globs. State file wins after it exists."},
 			},
 		},
 		Capabilities: Capabilities{
@@ -127,6 +133,7 @@ func (a *App) registration() Registration {
 			FrontendAuthProviderExclusive: false,
 			ModelRouter:                   true,
 			Scheduler:                     true,
+			RequestInterceptor:            true,
 			ResponseInterceptor:           true,
 			UsagePlugin:                   true,
 			ManagementAPI:                 true,
@@ -182,6 +189,51 @@ func (a *App) routeModel(raw []byte) ([]byte, error) {
 		TargetModel: rule.TargetModel,
 		Reason:      "cpa-key-policy:" + keyID,
 	})
+}
+
+// interceptRequestBefore rejects unsafe credential presentation for an
+// explicitly account-bound key before the selected upstream executor runs.
+// Frontend-auth cannot express a terminal rejection: Authenticated=false is
+// treated by CPA as "try the next provider". The request interceptor can stop
+// query-only or conflicting protected credentials without changing the host.
+func (a *App) interceptRequestBefore(raw []byte) ([]byte, error) {
+	var req RequestInterceptRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	if !a.store.Enabled() {
+		return OKEnvelope(RequestInterceptResponse{})
+	}
+	resolution := a.store.ResolveRequestKey(req.Headers, req.Metadata)
+	if resolution.Key == nil || resolution.Key.AccountBinding == nil {
+		return OKEnvelope(RequestInterceptResponse{})
+	}
+	if !resolution.Key.Enabled {
+		return OKEnvelope(requestRejection(http.StatusUnauthorized, "key_disabled", "cpa-key-policy: account-bound key is disabled"))
+	}
+	if resolution.Conflict {
+		return OKEnvelope(requestRejection(http.StatusBadRequest, "credential_conflict", "cpa-key-policy: protected requests must not contain conflicting credentials"))
+	}
+	if !resolution.HeaderPresent || !resolution.HeaderMatches {
+		return OKEnvelope(requestRejection(http.StatusUnauthorized, "header_key_required", "cpa-key-policy: account-bound requests require the configured key in a request header"))
+	}
+	return OKEnvelope(RequestInterceptResponse{})
+}
+
+func requestRejection(status int, code, message string) RequestInterceptResponse {
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"type":    "authentication_error",
+			"code":    code,
+			"message": message,
+		},
+	})
+	return RequestInterceptResponse{
+		Terminate:       true,
+		StatusCode:      status,
+		ResponseHeaders: http.Header{"Content-Type": []string{"application/json"}},
+		ResponseBody:    body,
+	}
 }
 
 // resolveProviderKey maps a ModelRule's provider to the provider key CPA's
@@ -244,44 +296,56 @@ func (a *App) interceptResponse(raw []byte) ([]byte, error) {
 	return OKEnvelope(ResponseInterceptResponse{Body: body})
 }
 
-// pickScheduler 处理 scheduler.pick 调用。当路由规则指定 Group 时，
-// 只保留 Attributes 匹配该组的凭证；Group 为空时，在 CPA 提供的
-// 全部候选凭证中调度。这使未将前端鉴权元数据转发到调度器
-// 的宿主版本也能对插件密钥执行全局加权轮询。
-//
-// 调度器不会直接收到下游 ModelRule。新版宿主会将 authenticate 写入的
-// group 转发到 Options.Metadata["group"]，旧版宿主则通过请求头判断
-// 是否为插件自有密钥，并进入无组全局池。
-//
-// 候选过滤规则：
-//  1. Codex 的 Attributes["plan_type"] 或 Antigravity 的 Attributes["tier"]
-//     必须与 group 相同。
-//  2. "supported" 组匹配无法读取 plan_type 的 Codex 凭证，使未分档凭证
-//     不会被混入其他档位。
-//
-// 过滤后只保留最高优先级的一层，再按凭证权重执行平滑加权轮询。权重默认
-// 为 1，非正数表示不再接收新请求，过大的权重会被限制。状态按
-// provider/model/group/priority 全局共享，因此所有下游 cpa_* 密钥共用
-// 同一个分配序列，而不是各自重新开始轮询。
+// pickScheduler enforces every applicable account constraint before selecting
+// a candidate. Once a configured key is recognized, an empty intersection is
+// a hard error: Handled=false would return the request to CPA's global pool.
 func (a *App) pickScheduler(raw []byte) ([]byte, error) {
 	var req SchedulerPickRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	group := schedulerGroupFromMetadata(req.Options.Metadata)
-	globalMode := a.store.GlobalWeightedRoundRobin()
-	if globalMode {
-		if !a.store.OwnsRequestKey(http.Header(req.Options.Headers)) {
-			// 全局模式仅接管插件自有密钥，原生密钥仍由 CPA 调度。
-			return OKEnvelope(SchedulerPickResponse{Handled: false})
-		}
-		group = ""
-	} else if group == "" && !a.store.OwnsRequestKey(http.Header(req.Options.Headers)) {
-		// 无组兼容路径只能影响插件自己的密钥，原生密钥仍由 CPA 调度。
+	if !a.store.Enabled() {
 		return OKEnvelope(SchedulerPickResponse{Handled: false})
 	}
+	resolution := a.store.ResolveRequestKey(http.Header(req.Options.Headers), req.Options.Metadata)
+	globalMode := a.store.GlobalWeightedRoundRobin()
+	key := resolution.Key
+	group := schedulerGroupFromMetadata(req.Options.Metadata)
+	owner := "metadata:" + group
+	var binding *policy.AccountBinding
+	if key == nil {
+		if group == "" || globalMode || resolution.HeaderPresent {
+			// The key is not managed by this plugin. Preserve native CPA routing,
+			// including host-owned session affinity.
+			return OKEnvelope(SchedulerPickResponse{Handled: false})
+		}
+	} else {
+		if !key.Enabled {
+			return ErrorEnvelope("key_disabled", "cpa-key-policy: configured key is disabled", http.StatusUnauthorized), nil
+		}
+		owner = key.ID
+		binding = key.AccountBinding
+		if !globalMode || binding != nil {
+			var err error
+			group, err = policy.SchedulerGroupForKey(key, schedulerRequestedModel(req.Options.Metadata), schedulerRequestProvider(req), req.Model)
+			if err != nil {
+				return ErrorEnvelope("account_constraint_ambiguous", "cpa-key-policy: cannot determine a unique account constraint: "+err.Error(), http.StatusForbidden), nil
+			}
+		} else {
+			group = ""
+		}
+	}
+	protected := key != nil && (binding != nil || group != "")
+	if protected {
+		if resolution.Conflict {
+			return ErrorEnvelope("credential_conflict", "cpa-key-policy: protected requests must not contain conflicting credentials", http.StatusBadRequest), nil
+		}
+		if !resolution.HeaderPresent || !resolution.HeaderMatches {
+			return ErrorEnvelope("header_key_required", "cpa-key-policy: protected requests require the configured key in a request header", http.StatusUnauthorized), nil
+		}
+	}
 	if len(req.Candidates) == 0 {
-		return OKEnvelope(SchedulerPickResponse{Handled: false})
+		return ErrorEnvelope("auth_not_found", "cpa-key-policy: the host supplied no credential candidates", http.StatusServiceUnavailable), nil
 	}
 
 	matched := make([]SchedulerAuthCandidate, 0, len(req.Candidates))
@@ -289,16 +353,23 @@ func (a *App) pickScheduler(raw []byte) ([]byte, error) {
 		if !schedulerCandidateUsable(cand.Status) {
 			continue
 		}
-		if group == "" || a.candidateMatchesGroup(cand, group) {
-			matched = append(matched, cand)
+		if !candidateMatchesRequestedProvider(cand, req) {
+			continue
 		}
+		if binding != nil && !binding.Matches(cand.ID) {
+			continue
+		}
+		if group != "" && !a.candidateMatchesGroup(cand, group) {
+			continue
+		}
+		matched = append(matched, cand)
 	}
 	if len(matched) == 0 {
-		if group != "" {
-			// 不降级到其他组，否则宿主可能选中不属于目标组的凭证。
-			return ErrorEnvelope("auth_not_found", "cpa-key-policy: 请求的凭证组没有可用候选项", http.StatusServiceUnavailable), nil
+		code := "auth_not_found"
+		if binding != nil {
+			code = "auth_not_bound"
 		}
-		return ErrorEnvelope("auth_not_found", "cpa-key-policy: 没有可用的凭证候选项", http.StatusServiceUnavailable), nil
+		return ErrorEnvelope(code, "cpa-key-policy: no host candidate satisfies the key's account constraints", http.StatusServiceUnavailable), nil
 	}
 
 	maxPriority := 0
@@ -321,8 +392,59 @@ func (a *App) pickScheduler(raw []byte) ([]byte, error) {
 		return ErrorEnvelope("auth_not_found", "cpa-key-policy: 匹配的凭证均没有正权重", http.StatusServiceUnavailable), nil
 	}
 
-	picked := a.pickSmoothWeighted(req, group, maxPriority, weighted)
+	strategy := policy.BindingStrategyWeightedRoundRobin
+	if binding != nil {
+		strategy = binding.Strategy
+	}
+	poolKey := schedulerPoolKey(req, owner, group, maxPriority)
+	var picked SchedulerAuthCandidate
+	switch strategy {
+	case policy.BindingStrategyRoundRobin:
+		picked = a.pickRoundRobin(poolKey, weighted)
+	case policy.BindingStrategyFillFirst:
+		picked = pickFillFirst(req, weighted)
+	default:
+		picked = a.pickSmoothWeighted(req, owner, group, maxPriority, weighted)
+	}
 	return OKEnvelope(SchedulerPickResponse{Handled: true, AuthID: picked.ID})
+}
+
+func schedulerRequestedModel(metadata map[string]any) string {
+	if metadata == nil {
+		return ""
+	}
+	for key, value := range metadata {
+		if strings.EqualFold(strings.TrimSpace(key), "requested_model") {
+			return strings.TrimSpace(fmt.Sprint(value))
+		}
+	}
+	return ""
+}
+
+func schedulerRequestProvider(req SchedulerPickRequest) string {
+	if provider := strings.TrimSpace(req.Provider); provider != "" {
+		return provider
+	}
+	if len(req.Providers) == 1 {
+		return strings.TrimSpace(req.Providers[0])
+	}
+	return ""
+}
+
+func candidateMatchesRequestedProvider(candidate SchedulerAuthCandidate, req SchedulerPickRequest) bool {
+	provider := strings.ToLower(strings.TrimSpace(candidate.Provider))
+	if requested := strings.ToLower(strings.TrimSpace(req.Provider)); requested != "" && requested != "mixed" {
+		return provider == requested
+	}
+	if len(req.Providers) == 0 {
+		return true
+	}
+	for _, requested := range req.Providers {
+		if provider == strings.ToLower(strings.TrimSpace(requested)) {
+			return true
+		}
+	}
+	return false
 }
 
 func schedulerCandidateUsable(status string) bool {
@@ -618,7 +740,10 @@ type keyWriteRequest struct {
 	ID                  string               `json:"id"`
 	Name                *string              `json:"name,omitempty"`
 	Enabled             *bool                `json:"enabled,omitempty"`
+	Native              *bool                `json:"native,omitempty"`
 	Key                 string               `json:"key,omitempty"`
+	AccountBinding      *policy.AccountBinding `json:"account_binding,omitempty"`
+	ClearAccountBinding bool                 `json:"clear_account_binding,omitempty"`
 	RPM                 *int                 `json:"rpm,omitempty"`
 	Models              []policy.ModelRule   `json:"models,omitempty"`
 	Aliases             []policy.KeyAliasRef `json:"aliases,omitempty"`
@@ -631,7 +756,9 @@ type publicKey struct {
 	ID                  string               `json:"id"`
 	Name                string               `json:"name"`
 	Enabled             bool                 `json:"enabled"`
+	Native              bool                 `json:"native,omitempty"`
 	KeyPreview          string               `json:"key_preview"`
+	AccountBinding      *policy.AccountBinding `json:"account_binding,omitempty"`
 	RPM                 int                  `json:"rpm"`
 	Models              []policy.ModelRule   `json:"models"`
 	Aliases             []policy.KeyAliasRef `json:"aliases"`
@@ -653,8 +780,12 @@ func (a *App) createKey(body []byte) ManagementResponse {
 		return jsonError(http.StatusBadRequest, "missing_id", "id is required")
 	}
 	plain := strings.TrimSpace(req.Key)
+	native := req.Native != nil && *req.Native
 	generated := false
 	var err error
+	if plain == "" && native {
+		return jsonError(http.StatusBadRequest, "native_key_required", "importing a native CPA key requires key")
+	}
 	if plain == "" {
 		plain, err = policy.GenerateKey()
 		if err != nil {
@@ -682,8 +813,11 @@ func (a *App) createKey(body []byte) ManagementResponse {
 		ID:                  req.ID,
 		Name:                name,
 		Enabled:             enabled,
+		Native:              native,
 		KeyHash:             hash,
 		KeyPreview:          policy.PreviewKey(plain),
+		CallerScope:         policy.CallerScopeForKey(req.ID),
+		AccountBinding:      req.AccountBinding,
 		RPM:                 rpm,
 		Models:              req.Models,
 		Aliases:             req.Aliases,
@@ -691,13 +825,20 @@ func (a *App) createKey(body []byte) ManagementResponse {
 		WeeklyLimitUSD:      applyFloat64(req.WeeklyLimitUSD, 0),
 		AllowModelsEndpoint: applyBool(req.AllowModelsEndpoint, false),
 	}
+	if native {
+		item.CallerScope = policy.CallerScopeForKey(plain)
+		item.KeyPreview = "native"
+	}
 	if err := a.store.UpsertKey(item, true); err != nil {
 		return jsonError(http.StatusBadRequest, "invalid_policy", err.Error())
 	}
+	saved, _ := a.keyConfigByID(item.ID)
 	bodyMap := map[string]any{
-		"key":       a.publicKeyFromConfig(item),
-		"plain_key": plain,
+		"key":       a.publicKeyFromConfig(saved),
 		"generated": generated,
+	}
+	if !native {
+		bodyMap["plain_key"] = plain
 	}
 	return jsonResponse(http.StatusCreated, bodyMap)
 }
@@ -729,6 +870,9 @@ func (a *App) patchKey(body []byte) ManagementResponse {
 	if req.Enabled != nil {
 		current.Enabled = *req.Enabled
 	}
+	if req.Native != nil && *req.Native != current.Native {
+		return jsonError(http.StatusBadRequest, "native_immutable", "native cannot be changed after key creation")
+	}
 	if req.RPM != nil {
 		current.RPM = *req.RPM
 	}
@@ -747,6 +891,11 @@ func (a *App) patchKey(body []byte) ManagementResponse {
 	if req.Aliases != nil {
 		current.Aliases = req.Aliases
 	}
+	if req.ClearAccountBinding {
+		current.AccountBinding = nil
+	} else if req.AccountBinding != nil {
+		current.AccountBinding = req.AccountBinding
+	}
 	if strings.TrimSpace(req.Key) != "" {
 		hash, err := policy.HashKey(req.Key)
 		if err != nil {
@@ -754,11 +903,25 @@ func (a *App) patchKey(body []byte) ManagementResponse {
 		}
 		current.KeyHash = hash
 		current.KeyPreview = policy.PreviewKey(req.Key)
+		if current.Native {
+			current.CallerScope = policy.CallerScopeForKey(req.Key)
+			current.KeyPreview = "native"
+		}
 	}
 	if err := a.store.UpsertKey(*current, true); err != nil {
 		return jsonError(http.StatusBadRequest, "invalid_policy", err.Error())
 	}
-	return jsonResponse(http.StatusOK, map[string]any{"key": a.publicKeyFromConfig(*current)})
+	saved, _ := a.keyConfigByID(current.ID)
+	return jsonResponse(http.StatusOK, map[string]any{"key": a.publicKeyFromConfig(saved)})
+}
+
+func (a *App) keyConfigByID(id string) (policy.KeyConfig, bool) {
+	for _, key := range a.store.Keys() {
+		if key.ID == id {
+			return key, true
+		}
+	}
+	return policy.KeyConfig{}, false
 }
 
 func (a *App) deleteKey(id string) ManagementResponse {
@@ -845,11 +1008,19 @@ func (a *App) publicKeys(keys []policy.KeyConfig) []publicKey {
 }
 
 func (a *App) publicKeyFromConfig(key policy.KeyConfig) publicKey {
+	var binding *policy.AccountBinding
+	if key.AccountBinding != nil {
+		copy := *key.AccountBinding
+		copy.Allow = append([]string(nil), key.AccountBinding.Allow...)
+		binding = &copy
+	}
 	out := publicKey{
 		ID:         key.ID,
 		Name:       key.Name,
 		Enabled:    key.Enabled,
+		Native:     key.Native,
 		KeyPreview: key.KeyPreview,
+		AccountBinding: binding,
 		RPM:        key.RPM,
 		// Ensure models/aliases always serialize as [] (never null). A nil slice
 		// would marshal to JSON null, which the UI accesses as .length and

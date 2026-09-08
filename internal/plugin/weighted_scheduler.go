@@ -17,10 +17,11 @@ type smoothWeightedState struct {
 func (a *App) clearSchedulerState() {
 	a.schedulerMu.Lock()
 	a.schedulerRR = make(map[string]*smoothWeightedState)
+	a.schedulerCursor = make(map[string]string)
 	a.schedulerMu.Unlock()
 }
 
-func (a *App) pickSmoothWeighted(req SchedulerPickRequest, group string, priority int, candidates []SchedulerAuthCandidate) SchedulerAuthCandidate {
+func (a *App) pickSmoothWeighted(req SchedulerPickRequest, owner, group string, priority int, candidates []SchedulerAuthCandidate) SchedulerAuthCandidate {
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
 
 	total := int64(0)
@@ -30,7 +31,7 @@ func (a *App) pickSmoothWeighted(req SchedulerPickRequest, group string, priorit
 		active[cand.ID] = struct{}{}
 	}
 
-	poolKey := schedulerPoolKey(req, group, priority)
+	poolKey := schedulerPoolKey(req, owner, group, priority)
 	a.schedulerMu.Lock()
 	defer a.schedulerMu.Unlock()
 	if a.schedulerRR == nil {
@@ -70,7 +71,7 @@ func (a *App) pickSmoothWeighted(req SchedulerPickRequest, group string, priorit
 	return candidates[bestIndex]
 }
 
-func schedulerPoolKey(req SchedulerPickRequest, group string, priority int) string {
+func schedulerPoolKey(req SchedulerPickRequest, owner, group string, priority int) string {
 	providers := append([]string(nil), req.Providers...)
 	for index := range providers {
 		providers[index] = strings.ToLower(strings.TrimSpace(providers[index]))
@@ -80,8 +81,60 @@ func schedulerPoolKey(req SchedulerPickRequest, group string, priority int) stri
 	if provider == "" {
 		provider = strings.Join(providers, ",")
 	}
-	return provider + "\x00" + strings.ToLower(strings.TrimSpace(req.Model)) + "\x00" +
+	return strings.ToLower(strings.TrimSpace(owner)) + "\x00" + provider + "\x00" + strings.ToLower(strings.TrimSpace(req.Model)) + "\x00" +
 		strings.ToLower(strings.TrimSpace(group)) + "\x00" + strconv.Itoa(priority)
+}
+
+func (a *App) pickRoundRobin(poolKey string, candidates []SchedulerAuthCandidate) SchedulerAuthCandidate {
+	ordered := append([]SchedulerAuthCandidate(nil), candidates...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	a.schedulerMu.Lock()
+	defer a.schedulerMu.Unlock()
+	if a.schedulerCursor == nil {
+		a.schedulerCursor = make(map[string]string)
+	}
+	if _, ok := a.schedulerCursor[poolKey]; !ok && len(a.schedulerCursor) >= schedulerStateCapacity {
+		a.schedulerCursor = make(map[string]string)
+	}
+	last := a.schedulerCursor[poolKey]
+	index := 0
+	if last != "" {
+		index = sort.Search(len(ordered), func(i int) bool { return ordered[i].ID > last })
+		if index >= len(ordered) {
+			index = 0
+		}
+	}
+	picked := ordered[index]
+	a.schedulerCursor[poolKey] = picked.ID
+	return picked
+}
+
+func pickFillFirst(req SchedulerPickRequest, candidates []SchedulerAuthCandidate) SchedulerAuthCandidate {
+	ordered := append([]SchedulerAuthCandidate(nil), candidates...)
+	providerOrder := make(map[string]int, len(req.Providers)+1)
+	for index, provider := range req.Providers {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider != "" {
+			providerOrder[provider] = index
+		}
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		leftProvider := strings.ToLower(strings.TrimSpace(ordered[i].Provider))
+		rightProvider := strings.ToLower(strings.TrimSpace(ordered[j].Provider))
+		leftOrder, leftOK := providerOrder[leftProvider]
+		rightOrder, rightOK := providerOrder[rightProvider]
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if leftOK && leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		if leftProvider != rightProvider {
+			return leftProvider < rightProvider
+		}
+		return ordered[i].ID < ordered[j].ID
+	})
+	return ordered[0]
 }
 
 func schedulerCandidateWeight(cand SchedulerAuthCandidate) int {

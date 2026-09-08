@@ -46,8 +46,10 @@ export default function KeyNew() {
             daily_limit_usd: v.daily_limit_usd,
             weekly_limit_usd: v.weekly_limit_usd,
             allow_models_endpoint: v.allow_models_endpoint,
+            account_binding: v.account_binding,
+            clear_account_binding: v.clear_account_binding,
           });
-          setPlain(r.plain_key);
+          if (r.plain_key) setPlain(r.plain_key);
         }}
       />
       <p className="fp-note mobile-hidden">{t("login.memoryNote")}</p>

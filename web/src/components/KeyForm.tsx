@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import type { KeyPublic, ModelRule, AliasMapping } from "../types";
+import type { KeyPublic, ModelRule, AliasMapping, AccountBinding } from "../types";
 import ModelPicker from "./ModelPicker";
 import { getPriceTable, lookupPrice, type PriceTable } from "../store/modelPrices";
 import { fetchAliases } from "../api/mappings";
@@ -19,6 +19,8 @@ export interface KeyFormValues {
   // downstream key, so the only plugin-enforceable choice is binary: 401 (hide
   // the list) or allow (client sees the full global list). Default false.
   allow_models_endpoint?: boolean;
+  account_binding?: AccountBinding;
+  clear_account_binding?: boolean;
 }
 
 interface Props {
@@ -81,12 +83,16 @@ export default function KeyForm({
 }: Props) {
   const nav = useNavigate();
   const [id, setId] = useState(initial?.id ?? "");
+  const isNative = initial?.native ?? false;
   const [name, setName] = useState(initial?.name ?? "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [rpm, setRpm] = useState(initial?.rpm ?? 0);
   const [dailyLimit, setDailyLimit] = useState(initial?.daily_limit_usd ?? 0);
   const [weeklyLimit, setWeeklyLimit] = useState(initial?.weekly_limit_usd ?? 0);
   const [allowModels, setAllowModels] = useState<boolean>(initial?.allow_models_endpoint ?? false);
+  const [bindingEnabled, setBindingEnabled] = useState<boolean>(initial?.account_binding !== undefined);
+  const [bindingAllow, setBindingAllow] = useState((initial?.account_binding?.allow ?? []).join("\n"));
+  const [bindingStrategy, setBindingStrategy] = useState<AccountBinding["strategy"]>(initial?.account_binding?.strategy ?? "weighted-round-robin");
   const t = useT();
 
   // Pricing table keyed by alias (lowercased) so it survives picker re-emits.
@@ -276,6 +282,10 @@ export default function KeyForm({
     });
     setBusy(true);
     try {
+	  const accountBinding = bindingEnabled ? {
+	    allow: bindingAllow.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+	    strategy: bindingStrategy,
+	  } satisfies AccountBinding : undefined;
       await onSubmit({
         id: id.trim(),
         name: name.trim(),
@@ -285,6 +295,8 @@ export default function KeyForm({
         daily_limit_usd: dailyLimit,
         weekly_limit_usd: weeklyLimit,
         allow_models_endpoint: allowModels,
+		account_binding: accountBinding,
+		clear_account_binding: !isNative && !bindingEnabled && initial?.account_binding !== undefined,
       });
     } catch (err) {
       const e = err as { response?: { data?: { error?: { message?: string } } }; message?: string };
@@ -546,7 +558,7 @@ export default function KeyForm({
                 <span>{t("keyForm.enableKey")}</span>
               </label>
             </div>
-            <div className="form-row">
+            {!isNative && <div className="form-row">
               <label>{t("keyForm.rpmLabel")}</label>
               <input
                 className="input"
@@ -555,10 +567,10 @@ export default function KeyForm({
                 value={rpm}
                 onChange={(e) => setRpm(parseInt(e.target.value || "0", 10) || 0)}
               />
-            </div>
+            </div>}
           </>
         ))}
-        {section(t("keyForm.mobile.sectionLimits"), (
+        {!isNative && section(t("keyForm.mobile.sectionLimits"), (
           <>
             <div className="form-row">
               <label>{t("keyForm.dailyLimitLabel")}</label>
@@ -586,15 +598,38 @@ export default function KeyForm({
         ))}
         {section(t("keyForm.mobile.sectionAccess"), (
           <>
-            <label className="switch kf-access-switch" title={t("keyForm.allowModelsTitle")}>
+            {!isNative && <><label className="switch kf-access-switch" title={t("keyForm.allowModelsTitle")}>
               <input type="checkbox" checked={allowModels} onChange={(e) => setAllowModels(e.target.checked)} />
               <span className="track"><span className="thumb" /></span>
               <span>{t("keyForm.allowModelsLabel")}</span>
             </label>
-            <p className="muted kf-hint">{t("keyForm.allowModelsHint")}</p>
+            <p className="muted kf-hint">{t("keyForm.allowModelsHint")}</p></>}
+            <label className="switch kf-access-switch" title={t("keyForm.accountBindingTitle")}>
+              <input type="checkbox" checked={bindingEnabled} disabled={isNative} onChange={(e) => setBindingEnabled(e.target.checked)} />
+              <span className="track"><span className="thumb" /></span>
+              <span>{t("keyForm.accountBindingLabel")}</span>
+            </label>
+            {isNative && <p className="muted kf-hint">{t("keyForm.nativeBindingHint")}</p>}
+            {bindingEnabled && (
+              <>
+                <div className="form-row">
+                  <label>{t("keyForm.accountBindingAllowLabel")}</label>
+                  <textarea className="input mono" rows={4} value={bindingAllow} onChange={(e) => setBindingAllow(e.target.value)} placeholder={t("keyForm.accountBindingAllowPlaceholder")} />
+                </div>
+                <div className="form-row">
+                  <label>{t("keyForm.accountBindingStrategyLabel")}</label>
+                  <select className="input" value={bindingStrategy} onChange={(e) => setBindingStrategy(e.target.value as AccountBinding["strategy"])}>
+                    <option value="weighted-round-robin">weighted-round-robin</option>
+                    <option value="round-robin">round-robin</option>
+                    <option value="fill-first">fill-first</option>
+                  </select>
+                </div>
+                <p className="muted kf-hint">{t("keyForm.accountBindingHint")}</p>
+              </>
+            )}
           </>
         ))}
-        <section className="kf-section mobile-only">
+        {!isNative && <section className="kf-section mobile-only">
           <div className="section-label">{t("keyForm.mobile.sectionModels")}</div>
           {globalAliases.length > 0 && (
             <div className="form-row kf-alias-pick" style={{ marginBottom: 12 }}>
@@ -664,7 +699,7 @@ export default function KeyForm({
             </div>
           )}
           <p className="muted kf-hint" style={{ marginTop: 8 }}>{t("keyForm.priceLabel")}</p>
-        </section>
+        </section>}
       </div>
 
       <div className="mobile-hidden">
@@ -691,7 +726,7 @@ export default function KeyForm({
         </div>
       </div>
       <div className="row2">
-        <div className="form-row">
+        {!isNative && <div className="form-row">
           <label>{t("keyForm.rpmLabel")}</label>
           <input
             className="input"
@@ -700,7 +735,7 @@ export default function KeyForm({
             value={rpm}
             onChange={(e) => setRpm(parseInt(e.target.value || "0", 10) || 0)}
           />
-        </div>
+        </div>}
         <div className="form-row">
           <label>{t("keyForm.statusLabel")}</label>
           <label className="switch">
@@ -715,7 +750,7 @@ export default function KeyForm({
         </div>
       </div>
 
-      <div className="row2">
+      {!isNative && <div className="row2">
         <div className="form-row">
           <label>{t("keyForm.dailyLimitLabel")}</label>
           <input
@@ -738,9 +773,9 @@ export default function KeyForm({
             onChange={(e) => setWeeklyLimit(parseNum(e.target.value))}
           />
         </div>
-      </div>
+      </div>}
 
-      <div className="form-row">
+      {!isNative && <div className="form-row">
         <label className="switch" title={t("keyForm.allowModelsTitle")}>
           <input
             type="checkbox"
@@ -753,9 +788,35 @@ export default function KeyForm({
         <span className="muted" style={{ fontSize: "0.85em", marginLeft: 8 }}>
           {t("keyForm.allowModelsHint")}
         </span>
+      </div>}
+
+      <div className="form-row">
+        <label className="switch" title={t("keyForm.accountBindingTitle")}>
+          <input type="checkbox" checked={bindingEnabled} disabled={isNative} onChange={(e) => setBindingEnabled(e.target.checked)} />
+          <span className="track"><span className="thumb" /></span>
+          <span>{t("keyForm.accountBindingLabel")}</span>
+        </label>
+        {isNative && <span className="muted" style={{ fontSize: "0.85em", marginLeft: 8 }}>{t("keyForm.nativeBindingHint")}</span>}
+        {bindingEnabled && (
+          <div className="row2" style={{ marginTop: 10 }}>
+            <div className="form-row">
+              <label>{t("keyForm.accountBindingAllowLabel")}</label>
+              <textarea className="input mono" rows={4} value={bindingAllow} onChange={(e) => setBindingAllow(e.target.value)} placeholder={t("keyForm.accountBindingAllowPlaceholder")} />
+              <span className="muted" style={{ fontSize: "0.85em" }}>{t("keyForm.accountBindingHint")}</span>
+            </div>
+            <div className="form-row">
+              <label>{t("keyForm.accountBindingStrategyLabel")}</label>
+              <select className="input" value={bindingStrategy} onChange={(e) => setBindingStrategy(e.target.value as AccountBinding["strategy"])}>
+                <option value="weighted-round-robin">weighted-round-robin</option>
+                <option value="round-robin">round-robin</option>
+                <option value="fill-first">fill-first</option>
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
-      {globalAliases.length > 0 && (
+      {!isNative && globalAliases.length > 0 && (
         <div className="form-row kf-alias-pick">
           <label>{t("keyForm.existingAliases")}</label>
           <div className="kf-alias-chips">
@@ -777,7 +838,7 @@ export default function KeyForm({
         </div>
       )}
 
-      <div className="form-row">
+      {!isNative && <div className="form-row">
         <label>{t("keyForm.modelsLabel")}</label>
         {pickPath ? (
           <div className="model-chips-box">
@@ -797,13 +858,13 @@ export default function KeyForm({
         ) : (
           <ModelPicker initial={initial?.models} onChange={handleModelsChange} />
         )}
-      </div>
+      </div>}
 
       {/* Per-alias pricing table. Stamped onto each ModelRule at submit.
           Each row toggles between token pricing (default) and per-call fixed
           pricing. Under per_call the three token-price inputs are hidden
           (values retained but dormant) and a single $/call input is shown. */}
-      {models.length > 0 && (
+      {!isNative && models.length > 0 && (
         <div className="form-row" style={{ marginTop: 8 }}>
           <label>{t("keyForm.priceLabel")}</label>
           <div className="card table-wrap" style={{ padding: 0 }}>

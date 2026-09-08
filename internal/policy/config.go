@@ -2,6 +2,7 @@ package policy
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,9 +34,16 @@ type KeyConfig struct {
 	ID         string      `yaml:"id" json:"id"`
 	Name       string      `yaml:"name" json:"name"`
 	Enabled    bool        `yaml:"enabled" json:"enabled"`
+	// Native leaves frontend authentication and model routing to CPA. It is
+	// useful for importing a CPA api-key solely to enforce an account binding.
+	Native     bool        `yaml:"native,omitempty" json:"native,omitempty"`
 	KeyHash    string      `yaml:"key_hash" json:"key_hash"`
 	KeyPreview string      `yaml:"key_preview" json:"key_preview"`
-	RPM        int         `yaml:"rpm" json:"rpm"`
+	// CallerScope is CPA's irreversible namespace for the downstream key. It
+	// identifies imported native keys without retaining another plaintext copy.
+	CallerScope    string          `yaml:"caller_scope,omitempty" json:"caller_scope,omitempty"`
+	AccountBinding *AccountBinding `yaml:"account_binding,omitempty" json:"account_binding,omitempty"`
+	RPM            int             `yaml:"rpm" json:"rpm"`
 	Models     []ModelRule `yaml:"models" json:"models"`
 	// Aliases references global alias mappings by name. When non-empty, the key
 	// uses these aliases for routing and billing. Per-key price overrides are
@@ -431,12 +439,19 @@ func normalizeConfig(cfg *Config) error {
 	// load) so old configs and old state files are always migrated.
 	migrateModelsToAliases(cfg)
 	seen := map[string]struct{}{}
+	scopeSeen := map[string]string{}
+	type hashOwner struct {
+		id        string
+		protected bool
+	}
+	hashSeen := map[string]hashOwner{}
 	for i := range cfg.Keys {
 		key := &cfg.Keys[i]
 		key.ID = strings.TrimSpace(key.ID)
 		key.Name = strings.TrimSpace(key.Name)
 		key.KeyHash = strings.TrimSpace(key.KeyHash)
 		key.KeyPreview = strings.TrimSpace(key.KeyPreview)
+		key.CallerScope = strings.ToLower(strings.TrimSpace(key.CallerScope))
 		if key.ID == "" {
 			return errors.New("key id is required")
 		}
@@ -446,6 +461,53 @@ func normalizeConfig(cfg *Config) error {
 		seen[key.ID] = struct{}{}
 		if key.Name == "" {
 			key.Name = key.ID
+		}
+		if !key.Native {
+			// CPA uses the plugin Principal (the stable key ID), rather than the
+			// plaintext plugin secret, to build caller_scope.
+			key.CallerScope = CallerScopeForKey(key.ID)
+		} else {
+			if key.AccountBinding == nil {
+				return fmt.Errorf("native key %q requires account_binding", key.ID)
+			}
+			if key.KeyHash == "" {
+				return fmt.Errorf("native key %q requires key_hash", key.ID)
+			}
+			if key.CallerScope == "" {
+				return fmt.Errorf("native key %q requires caller_scope; import it through the Management API or provide the derived scope", key.ID)
+			}
+			if len(key.Models) > 0 || len(key.Aliases) > 0 {
+				return fmt.Errorf("native key %q cannot configure models or aliases", key.ID)
+			}
+		}
+		if key.CallerScope != "" {
+			if len(key.CallerScope) != 64 {
+				return fmt.Errorf("key %q caller_scope must be a 64-character SHA-256 hex digest", key.ID)
+			}
+			if _, err := hex.DecodeString(key.CallerScope); err != nil {
+				return fmt.Errorf("key %q caller_scope is invalid: %w", key.ID, err)
+			}
+		}
+		if key.AccountBinding != nil {
+			if err := normalizeAccountBinding(key.AccountBinding); err != nil {
+				return fmt.Errorf("key %q account_binding: %w", key.ID, err)
+			}
+		}
+		if key.KeyHash != "" {
+			hashKey := strings.ToLower(key.KeyHash)
+			current := hashOwner{id: key.ID, protected: key.AccountBinding != nil || key.Native}
+			if prior, exists := hashSeen[hashKey]; exists && (prior.protected || current.protected) {
+				return fmt.Errorf("account-bound keys %q and %q cannot share a key_hash", prior.id, key.ID)
+			}
+			if _, exists := hashSeen[hashKey]; !exists || current.protected {
+				hashSeen[hashKey] = current
+			}
+		}
+		if key.CallerScope != "" {
+			if prior, exists := scopeSeen[key.CallerScope]; exists {
+				return fmt.Errorf("keys %q and %q use the same caller_scope", prior, key.ID)
+			}
+			scopeSeen[key.CallerScope] = key.ID
 		}
 		if key.RPM < 0 {
 			return fmt.Errorf("key %q rpm cannot be negative", key.ID)
@@ -483,6 +545,13 @@ func normalizeConfig(cfg *Config) error {
 			}
 			if model.PerCallUSD < 0 {
 				return fmt.Errorf("key %q model %q per_call_usd cannot be negative", key.ID, model.Alias)
+			}
+		}
+	}
+	if !cfg.Enabled {
+		for _, key := range cfg.Keys {
+			if key.AccountBinding != nil {
+				return fmt.Errorf("account-bound key %q requires the plugin to remain enabled", key.ID)
 			}
 		}
 	}

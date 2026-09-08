@@ -60,14 +60,30 @@ Two sources of “which auth file may serve this request”:
 
 **Runtime rule:** if a mapping sets a group, the plugin scheduler **only** picks auth files in that group. No match → hard failure (`auth_not_found`), never silently fall back to another tier.
 
-**Scheduling:** the plugin keeps the highest available `Priority` tier, then applies **smooth weighted round-robin** using each credential's `weight`:
+**Scheduling:** constraints are applied first. The plugin then keeps the highest available `Priority` tier and selects within that intersection:
 
 - Weight is read from the CPA credential candidate's `Weight`, `Attributes.weight`, or `Metadata.weight` field.
 - Missing or invalid weight defaults to `1`; non-positive weight stops new requests; values are capped at `1000000`.
-- State is shared globally by `provider + model + group + Priority`, so all downstream `cpa_…` keys contribute to one distribution. An empty group is one global pool containing every candidate CPA offers for that provider/model.
+- Scheduler state is scoped by downstream key + provider + model + group + Priority. Keys with different bindings do not share a cursor.
 - Lower-priority credentials participate only when every higher-priority credential is unavailable or has non-positive weight.
-- When CPA does not propagate frontend-auth group metadata (including CPA `7.2.140`), plugin-owned keys still use global weighted round-robin instead of falling back to CPA's `routing.strategy`; native CPA keys remain untouched.
-- With `global_weighted_round_robin: true`, the plugin deliberately ignores group even when CPA propagates it, then schedules by Weight across every current provider/model candidate.
+- When CPA omits frontend-auth metadata, the plugin recovers the unique group from the Header key, `requested_model`, and final provider/model. Missing or ambiguous target information fails; it never falls back to the full pool.
+- `global_weighted_round_robin: true` preserves the old group-ignoring behavior only for keys without `account_binding`. It never bypasses an explicit binding or its target group.
+
+### Fail-closed account binding
+
+Each key may define `account_binding.allow`, a case-sensitive list of Go `path.Match` globs over CPA auth candidate IDs. A present empty list means “allow no accounts”; it is not the same as omitting the binding.
+
+```yaml
+account_binding:
+  allow: ["codex-team-*.json", "openai-compatibility:corp:*"]
+  strategy: weighted-round-robin # weighted-round-robin | round-robin | fill-first
+```
+
+The scheduler intersects the binding, the uniquely recovered target group, candidate provider/status, positive weight, and highest available Priority. An empty intersection returns `auth_not_bound`; it never returns `Handled:false` or delegates to CPA's global pool. Account-bound requests must present the configured key in a Header. Query-only and conflicting protected credentials are terminated before upstream execution.
+
+CPA-native keys are untouched unless explicitly imported as `native: true`. Importing stores the ordinary key hash plus CPA's irreversible `caller_scope`, never another plaintext copy; the secret is not echoed by the API. Native keys keep host authentication and model routing, but an imported binding is enforced by this scheduler. Host session affinity remains available only to native keys that are not taken over by a binding; plugin-handled RR/WRR does not automatically inherit it.
+
+**Operational boundary:** this is a plugin-only control. Keep the plugin enabled and healthy, and do not use CPA Home mode for account-bound traffic because Home selects before the ordinary plugin scheduler. If the plugin is unloaded/fused, a key that still exists in CPA `api-keys` is again governed only by CPA's global pool. For the strongest fail-closed behavior under plugin removal, use plugin-issued keys and never duplicate them in CPA `api-keys`.
 
 **Custom classification** (Web UI → Mapping → Credential Classification):
 
@@ -92,7 +108,8 @@ Channels under CPA `openai-compatibility` (e.g. a named proxy) use the **channel
 |------|------|
 | Frontend auth | Know plugin keys; enforce alias allow-list, RPM, budget; stamp route + group metadata |
 | Model router | Alias → provider + target model |
-| Scheduler | Optionally filter candidates by `group`, then smooth-weight them within the highest Priority tier |
+| Request interceptor | Reject query-only or conflicting credentials for account-bound keys before upstream execution |
+| Scheduler | Intersect key binding + target group, fail closed, then apply WRR/RR/fill-first within the highest Priority tier |
 | Response interceptor | Non-stream JSON: rewrite top-level `model` back to the alias |
 | Usage | Token / per-call billing into the state file |
 | Management API + embedded Web UI | Keys, aliases, classify rules, status |
@@ -137,8 +154,7 @@ plugins:
 Notes:
 
 - If `state_file` exists, it is the source of truth for keys / aliases / classify rules / usage.
-- `global_weighted_round_robin: true` ignores the selected alias target group and places every current provider/model candidate in one global pool. Distribution then follows the Weight values on CPA's credential page. The default is `false`.
-- With this option enabled, alias-level group rotation no longer restricts the final credential. Native CPA keys remain unaffected.
+- `global_weighted_round_robin: true` ignores the selected alias target group only for unbound plugin keys. An explicit account binding always remains restrictive. The default is `false`.
 - Prefer creating keys and aliases in the **Web UI** or Management API; seed YAML `keys` is mainly for first boot.
 - Never commit real key hashes, management secrets, or live host URLs into public docs.
 
@@ -206,9 +222,30 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/keys" \
     "id": "team-a",
     "name": "Team A",
     "rpm": 60,
+    "account_binding": {
+      "allow": ["codex-team-*.json"],
+      "strategy": "weighted-round-robin"
+    },
     "models": [
       {"alias":"fast","provider":"codex","target_model":"gpt-5.4-mini","group":"free"}
     ]
+  }'
+```
+
+Import an existing CPA-native key for binding (the key must still exist in CPA `api-keys`; the response does not echo it):
+
+```bash
+curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/keys" \
+  -H "Authorization: Bearer $MANAGEMENT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "native-team-a",
+    "native": true,
+    "key": "existing-cpa-api-key",
+    "account_binding": {
+      "allow": ["openai-compatibility:corp:*"],
+      "strategy": "round-robin"
+    }
   }'
 ```
 
@@ -239,6 +276,8 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/aliases" \
 | Known key + unknown model | Auth rejected |
 | RPM / budget exceeded | Rejected |
 | Group set, no matching auth file | `auth_not_found` / unavailable (no cross-tier leak) |
+| Account binding has no eligible host candidate | `auth_not_bound` / unavailable; no global fallback |
+| Bound key supplied only in query, or conflicting Header credentials | Rejected before upstream execution |
 | Unknown key | Plugin declines; CPA may try native `api-keys` |
 | Non-stream chat response | Top-level `model` rewritten to alias |
 | Stream | Body not rewritten (v1) |
@@ -257,7 +296,7 @@ Per-key `allow_models_endpoint`: **binary** — deny (401) or full global list. 
 3. Open the Web UI with the management secret.
 4. (Optional) Define **classify rules** if you need custom credential buckets.
 5. Create **aliases** (multi-target / pricing) and/or pick models per key (with tier or Custom group).
-6. Create keys, save the one-time `plain_key`, hand out to clients.
+6. Create keys, optionally configure account-binding globs, save the one-time `plain_key`, and hand it to clients.
 7. Client: OpenAI-compatible base URL = CPA; `Authorization: Bearer cpa_…`; `model` = alias name.
 8. Ensure openai-compat channels list the models you map; empty model lists → host “no auth” errors.
 
@@ -269,4 +308,3 @@ Per-key `allow_models_endpoint`: **binary** — deny (401) or full global list. 
 go test ./...
 cd web && npm test && npm run build
 ```
-

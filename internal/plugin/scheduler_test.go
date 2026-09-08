@@ -16,7 +16,7 @@ func TestSchedulerPickNoGroupUsesGlobalWeightedRoundRobin(t *testing.T) {
 		Model:    "gpt-5-codex",
 		Options: SchedulerPickOptions{
 			Headers:  map[string][]string{"Authorization": {"Bearer " + plain}},
-			Metadata: map[string]any{},
+			Metadata: map[string]any{"requested_model": "fast"},
 		},
 		Candidates: []SchedulerAuthCandidate{
 			{ID: "codex-plus", Provider: "codex", Weight: 4, Attributes: map[string]string{"plan_type": "plus"}},

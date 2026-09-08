@@ -46,11 +46,18 @@ export interface UsageSummary {
   weekly_call_count?: number;
 }
 
+export interface AccountBinding {
+  allow: string[];
+  strategy?: "weighted-round-robin" | "round-robin" | "fill-first";
+}
+
 export interface KeyPublic {
   id: string;
   name: string;
   enabled: boolean;
+  native?: boolean;
   key_preview: string;
+  account_binding?: AccountBinding;
   rpm: number;
   models: ModelRule[];
   aliases?: KeyAliasRef[];
@@ -67,7 +74,10 @@ export interface KeyWriteRequest {
   id: string;
   name?: string;
   enabled?: boolean;
+  native?: boolean;
   key?: string;
+  account_binding?: AccountBinding;
+  clear_account_binding?: boolean;
   rpm?: number;
   models?: ModelRule[];
   aliases?: KeyAliasRef[];
@@ -78,7 +88,7 @@ export interface KeyWriteRequest {
 
 export interface CreateKeyResponse {
   key: KeyPublic;
-  plain_key: string;
+  plain_key?: string;
   generated: boolean;
 }
 

@@ -17,6 +17,8 @@ const (
 	MethodFrontendAuthAuthenticate = "frontend_auth.authenticate"
 
 	MethodModelRoute = "model.route"
+	MethodRequestInterceptBefore = "request.intercept_before"
+	MethodRequestInterceptAfter  = "request.intercept_after"
 
 	MethodResponseInterceptAfter = "response.intercept_after"
 
@@ -90,6 +92,7 @@ type Capabilities struct {
 	FrontendAuthProviderExclusive bool `json:"frontend_auth_provider_exclusive,omitempty"`
 	ModelRouter                   bool `json:"model_router"`
 	Scheduler                     bool `json:"scheduler,omitempty"`
+	RequestInterceptor            bool `json:"request_interceptor,omitempty"`
 	ResponseInterceptor           bool `json:"response_interceptor"`
 	UsagePlugin                   bool `json:"usage_plugin"`
 	ManagementAPI                 bool `json:"management_api"`
@@ -130,6 +133,29 @@ type ModelRouteResponse struct {
 	Target      string `json:"Target,omitempty"`
 	TargetModel string `json:"TargetModel,omitempty"`
 	Reason      string `json:"Reason,omitempty"`
+}
+
+type RequestInterceptRequest struct {
+	RequestID      string         `json:"RequestID,omitempty"`
+	TraceID        string         `json:"TraceID,omitempty"`
+	SourceFormat   string         `json:"SourceFormat,omitempty"`
+	ToFormat       string         `json:"ToFormat,omitempty"`
+	Model          string         `json:"Model,omitempty"`
+	RequestedModel string         `json:"RequestedModel,omitempty"`
+	Stream         bool           `json:"Stream,omitempty"`
+	Headers        http.Header    `json:"Headers,omitempty"`
+	Body           []byte         `json:"Body,omitempty"`
+	Metadata       map[string]any `json:"Metadata,omitempty"`
+}
+
+type RequestInterceptResponse struct {
+	Headers         http.Header `json:"Headers,omitempty"`
+	Body            []byte      `json:"Body,omitempty"`
+	ClearHeaders    []string    `json:"ClearHeaders,omitempty"`
+	Terminate       bool        `json:"Terminate,omitempty"`
+	StatusCode      int         `json:"StatusCode,omitempty"`
+	ResponseHeaders http.Header `json:"ResponseHeaders,omitempty"`
+	ResponseBody    []byte      `json:"ResponseBody,omitempty"`
 }
 
 // SchedulerPickRequest 是宿主调用 scheduler.pick 时的载荷。
