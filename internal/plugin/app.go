@@ -19,6 +19,8 @@ type App struct {
 	classifyCache map[string][]string
 	schedulerMu   sync.Mutex
 	schedulerRR   map[string]*smoothWeightedState
+	catalogMu     sync.RWMutex
+	catalog       catalogPolicy
 }
 
 const classifyCacheCapacity = 4096
@@ -84,6 +86,10 @@ func (a *App) configure(raw []byte) error {
 			return err
 		}
 	}
+	catalog, err := decodeCatalogPolicy(req.ConfigYAML)
+	if err != nil {
+		return err
+	}
 	cfg, err := policy.DecodeConfig(req.ConfigYAML)
 	if err != nil {
 		return err
@@ -91,6 +97,7 @@ func (a *App) configure(raw []byte) error {
 	if err := a.store.Configure(cfg); err != nil {
 		return err
 	}
+	a.setCatalogPolicy(catalog)
 	// Register the classify cache clear callback, then clear once for safety.
 	a.store.SetOnClassifyRulesChanged(func() {
 		a.clearClassifyCache()
@@ -119,6 +126,7 @@ func (a *App) registration() Registration {
 				{Name: "enabled", Type: "boolean", Description: "Enable or disable this plugin without unloading it."},
 				{Name: "state_file", Type: "string", Description: "JSON state file used for key policy changes made through the Management API."},
 				{Name: "global_weighted_round_robin", Type: "boolean", Description: "忽略别名目标的 group，对当前 provider/model 的全部候选凭证执行全局加权轮询。"},
+				{Name: "catalog_groups", Type: "array", Description: "Reusable /v1/models catalogs assigned to downstream key IDs; entries can clone, rename, patch, or remove model metadata."},
 				{Name: "keys", Type: "array", Description: "Initial downstream key policy list. State file wins after it exists."},
 			},
 		},
@@ -173,6 +181,13 @@ func (a *App) routeModel(raw []byte) ([]byte, error) {
 	}
 	rule, keyID, ok := a.store.Route(req.Headers, req.Query, req.RequestedModel)
 	if !ok {
+		return OKEnvelope(ModelRouteResponse{Handled: false})
+	}
+	// "native" authorizes the model for this plugin key but deliberately
+	// leaves provider selection to CPA. This is useful when the same model is
+	// available from multiple native/compatibility providers and CPA's mixed
+	// router should choose among them.
+	if strings.EqualFold(strings.TrimSpace(rule.Provider), "native") {
 		return OKEnvelope(ModelRouteResponse{Handled: false})
 	}
 	return OKEnvelope(ModelRouteResponse{
@@ -233,6 +248,13 @@ func (a *App) interceptResponse(raw []byte) ([]byte, error) {
 		// Streaming responses are not safe to rewrite (SSE framing) — return as-is.
 		return OKEnvelope(ResponseInterceptResponse{})
 	}
+	if isModelCatalogResponse(req) {
+		body, changed := a.rewriteModelCatalog(req)
+		if !changed {
+			return OKEnvelope(ResponseInterceptResponse{})
+		}
+		return OKEnvelope(ResponseInterceptResponse{Body: body})
+	}
 	alias, ok := a.store.ResponseAlias(req.RequestHeaders, nil, req.RequestedModel)
 	if !ok {
 		return OKEnvelope(ResponseInterceptResponse{})
@@ -267,6 +289,13 @@ func (a *App) pickScheduler(raw []byte) ([]byte, error) {
 	var req SchedulerPickRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
+	}
+	// A native route delegates both provider and credential selection to CPA.
+	// Resolve it again from the scheduler payload because some host versions do
+	// not propagate frontend-auth metadata into SchedulerPickOptions.Metadata.
+	if rule, _, ok := a.store.Route(http.Header(req.Options.Headers), nil, req.Model); ok &&
+		strings.EqualFold(strings.TrimSpace(rule.Provider), "native") {
+		return OKEnvelope(SchedulerPickResponse{Handled: false})
 	}
 	group := schedulerGroupFromMetadata(req.Options.Metadata)
 	globalMode := a.store.GlobalWeightedRoundRobin()
