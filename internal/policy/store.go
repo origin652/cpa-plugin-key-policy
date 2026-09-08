@@ -20,6 +20,7 @@ type Store struct {
 	statePath                string
 	keys                     map[string]*KeyConfig
 	keysByHash               map[string]*KeyConfig
+	keysByCallerScope        map[string]*KeyConfig
 	limiter                  *RateLimiter
 	usage                    *usageLedger
 	// flusher for periodically persisting the usage ledger to the state file.
@@ -81,6 +82,7 @@ func NewStore() *Store {
 		enabled:      DefaultConfig().Enabled,
 		keys:         make(map[string]*KeyConfig),
 		keysByHash:   make(map[string]*KeyConfig),
+		keysByCallerScope: make(map[string]*KeyConfig),
 		limiter:      NewRateLimiter(),
 		usage:        newUsageLedger(time.Now),
 		rrCounters:   make(map[string]int),
@@ -300,6 +302,22 @@ func (s *Store) Authenticate(method, path string, headers http.Header, query map
 	if key == nil {
 		return AuthDecision{Known: false, Reason: "unknown_key"}
 	}
+	if key.Native {
+		// Imported CPA keys remain authenticated by the host. The plugin only
+		// takes ownership later to enforce their explicit account binding.
+		return AuthDecision{Known: false, Reason: "native_key"}
+	}
+	if key.AccountBinding != nil {
+		headerValues := HeaderCredentials(headers)
+		queryValues := QueryCredentials(query)
+		if len(headerValues) != 1 || !MatchHash(headerValues[0], key.KeyHash) || len(queryValues) > 0 {
+			reason := "header_key_required"
+			if len(headerValues) > 1 || (len(headerValues) == 1 && len(queryValues) > 0) {
+				reason = "credential_conflict"
+			}
+			return AuthDecision{Known: true, KeyID: key.ID, Principal: key.ID, Reason: reason}
+		}
+	}
 	decision := AuthDecision{
 		Known:     true,
 		KeyID:     key.ID,
@@ -393,7 +411,7 @@ func (s *Store) Route(headers http.Header, query map[string][]string, requested 
 		return ModelRule{}, "", false
 	}
 	key := s.findBySecret(ExtractAPIKey(headers, query))
-	if key == nil || !key.Enabled {
+	if key == nil || key.Native || !key.Enabled {
 		return ModelRule{}, "", false
 	}
 	// Prefer the selection Authenticate already made for this request so the
@@ -738,10 +756,122 @@ func (s *Store) FindByAPIKey(raw string) *KeyConfig {
 	return s.findBySecret(raw)
 }
 
+// FindByCallerScope resolves the host-generated irreversible caller namespace.
+func (s *Store) FindByCallerScope(scope string) *KeyConfig {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if scope == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneKeyConfig(s.keysByCallerScope[scope])
+}
+
+type RequestKeyResolution struct {
+	Key           *KeyConfig
+	HeaderPresent bool
+	HeaderMatches bool
+	Conflict      bool
+}
+
+// ResolveRequestKey combines the trusted host caller_scope with raw Header
+// credentials. caller_scope identifies the authenticated key; the Header hash
+// proves the protected request did not arrive through a query-only credential.
+func (s *Store) ResolveRequestKey(headers http.Header, metadata map[string]any) RequestKeyResolution {
+	values := HeaderCredentials(headers)
+	resolution := RequestKeyResolution{HeaderPresent: len(values) > 0, Conflict: len(values) > 1}
+	var scope string
+	if metadata != nil {
+		if raw, ok := metadata[CallerScopeMetadataKey]; ok {
+			scope = strings.TrimSpace(fmt.Sprint(raw))
+		}
+	}
+	if key := s.FindByCallerScope(scope); key != nil {
+		resolution.Key = key
+		for _, value := range values {
+			if MatchHash(value, key.KeyHash) {
+				resolution.HeaderMatches = true
+				break
+			}
+		}
+		return resolution
+	}
+
+	// Compatibility fallback for hosts that do not supply caller_scope: a
+	// unique configured Header key can still be constrained safely.
+	var matched *KeyConfig
+	for _, value := range values {
+		if key := s.findBySecret(value); key != nil {
+			if matched != nil && matched.ID != key.ID {
+				resolution.Conflict = true
+				continue
+			}
+			matched = key
+		}
+	}
+	if matched != nil {
+		resolution.Key = matched
+		resolution.HeaderMatches = len(values) == 1 && MatchHash(values[0], matched.KeyHash)
+	}
+	return resolution
+}
+
+// SchedulerGroup resolves the unique target group from key policy plus the
+// host's original requested model and final provider/model. It never advances
+// alias round-robin state and rejects indistinguishable targets with different
+// groups instead of guessing from the pending FIFO.
+func (s *Store) SchedulerGroup(keyID, requested, provider, model string) (string, error) {
+	key := s.findByID(keyID)
+	if key == nil {
+		return "", ErrUnknownKey
+	}
+	return SchedulerGroupForKey(key, requested, provider, model)
+}
+
+// SchedulerGroupForKey resolves a group from one immutable key snapshot, so a
+// concurrent hot update cannot combine an old binding with a new route policy.
+func SchedulerGroupForKey(key *KeyConfig, requested, provider, model string) (string, error) {
+	if key == nil {
+		return "", ErrUnknownKey
+	}
+	if key.Native {
+		return "", nil
+	}
+	requested = strings.TrimSpace(requested)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.TrimSpace(model)
+	if requested == "" || provider == "" || model == "" {
+		return "", fmt.Errorf("requested model, provider, and target model are required (requested=%q provider=%q model=%q)", requested, provider, model)
+	}
+	groups := make(map[string]struct{})
+	for _, rule := range key.Models {
+		if !strings.EqualFold(rule.Alias, requested) || !schedulerProviderMatches(rule.Provider, provider) || !strings.EqualFold(rule.TargetModel, model) {
+			continue
+		}
+		groups[strings.ToLower(strings.TrimSpace(rule.Group))] = struct{}{}
+	}
+	if len(groups) == 0 {
+		return "", fmt.Errorf("no configured target matches alias %q, provider %q, model %q", requested, provider, model)
+	}
+	if len(groups) > 1 {
+		return "", fmt.Errorf("target is ambiguous across %d credential groups", len(groups))
+	}
+	for group := range groups {
+		return group, nil
+	}
+	return "", nil
+}
+
+func schedulerProviderMatches(configured, actual string) bool {
+	configured = strings.ToLower(strings.TrimSpace(configured))
+	actual = strings.ToLower(strings.TrimSpace(actual))
+	return configured == actual || "openai-compatible-"+configured == actual
+}
+
 // OwnsRequestKey 报告请求是否使用了当前已启用的插件密钥。
 func (s *Store) OwnsRequestKey(headers http.Header) bool {
 	key, enabled := s.findBySecretWhenEnabled(ExtractAPIKey(headers, nil))
-	return enabled && key != nil && key.Enabled
+	return enabled && key != nil && !key.Native && key.Enabled
 }
 
 func (s *Store) findBySecret(raw string) *KeyConfig {
@@ -759,10 +889,7 @@ func (s *Store) findBySecret(raw string) *KeyConfig {
 	if key == nil {
 		return nil
 	}
-	copy := *key
-	copy.Models = append([]ModelRule(nil), key.Models...)
-	copy.Aliases = append([]KeyAliasRef(nil), key.Aliases...)
-	return &copy
+	return cloneKeyConfig(key)
 }
 
 func (s *Store) findBySecretWhenEnabled(raw string) (*KeyConfig, bool) {
@@ -786,10 +913,7 @@ func (s *Store) findBySecretWhenEnabled(raw string) (*KeyConfig, bool) {
 	if key == nil {
 		return nil, true
 	}
-	copy := *key
-	copy.Models = append([]ModelRule(nil), key.Models...)
-	copy.Aliases = append([]KeyAliasRef(nil), key.Aliases...)
-	return &copy, true
+	return cloneKeyConfig(key), true
 }
 
 // findByID resolves a key config by its ID. The host's usage.handle call does
@@ -817,10 +941,7 @@ func (s *Store) findByID(id string) *KeyConfig {
 	if key == nil {
 		return nil
 	}
-	copy := *key
-	copy.Models = append([]ModelRule(nil), key.Models...)
-	copy.Aliases = append([]KeyAliasRef(nil), key.Aliases...)
-	return &copy
+	return cloneKeyConfig(key)
 }
 
 func (s *Store) rebuildKeysByHashLocked() {
@@ -844,6 +965,36 @@ func (s *Store) rebuildKeysByHashLocked() {
 		}
 	}
 	s.keysByHash = byHash
+	byScope := make(map[string]*KeyConfig, len(ids))
+	for _, id := range ids {
+		key := s.keys[id]
+		if key == nil {
+			continue
+		}
+		scope := strings.ToLower(strings.TrimSpace(key.CallerScope))
+		if scope == "" {
+			continue
+		}
+		if _, exists := byScope[scope]; !exists {
+			byScope[scope] = key
+		}
+	}
+	s.keysByCallerScope = byScope
+}
+
+func cloneKeyConfig(key *KeyConfig) *KeyConfig {
+	if key == nil {
+		return nil
+	}
+	copy := *key
+	copy.Models = append([]ModelRule(nil), key.Models...)
+	copy.Aliases = append([]KeyAliasRef(nil), key.Aliases...)
+	if key.AccountBinding != nil {
+		binding := *key.AccountBinding
+		binding.Allow = append([]string(nil), key.AccountBinding.Allow...)
+		copy.AccountBinding = &binding
+	}
+	return &copy
 }
 
 func (k *KeyConfig) ModelForAlias(alias string) (ModelRule, bool) {
@@ -915,10 +1066,8 @@ func (s *Store) Keys() []KeyConfig {
 func (s *Store) keysSnapshotLocked() []KeyConfig {
 	keys := make([]KeyConfig, 0, len(s.keys))
 	for _, key := range s.keys {
-		copy := *key
-		copy.Models = append([]ModelRule(nil), key.Models...)
-		copy.Aliases = append([]KeyAliasRef(nil), key.Aliases...)
-		keys = append(keys, copy)
+		copy := cloneKeyConfig(key)
+		keys = append(keys, *copy)
 	}
 	// Bug 5 fix: stable order by ID so list APIs and frontend rendering are
 	// deterministic (Go map iteration is randomized). Doesn't affect which key
@@ -978,13 +1127,27 @@ func (s *Store) UpsertKey(input KeyConfig, persist bool) error {
 	existingAliases := s.aliasesSnapshotLocked()
 	existingRules := s.classifyRulesSnapshotLocked()
 	s.mu.RUnlock()
-	cfg := Config{Enabled: true, StateFile: s.StatePath(), Keys: []KeyConfig{input}, Aliases: existingAliases, ClassifyRules: existingRules}
+	cfg := Config{Enabled: s.Enabled(), StateFile: s.StatePath(), Keys: []KeyConfig{input}, Aliases: existingAliases, ClassifyRules: existingRules}
 	if err := normalizeConfig(&cfg); err != nil {
 		return err
 	}
 	key := cfg.Keys[0]
 	now := time.Now().UTC()
 	s.mu.Lock()
+	for existingID, existing := range s.keys {
+		if existing == nil || existingID == key.ID {
+			continue
+		}
+		if key.CallerScope != "" && strings.EqualFold(existing.CallerScope, key.CallerScope) {
+			s.mu.Unlock()
+			return fmt.Errorf("keys %q and %q cannot share caller_scope", existingID, key.ID)
+		}
+		if key.KeyHash != "" && strings.EqualFold(existing.KeyHash, key.KeyHash) &&
+			(key.AccountBinding != nil || key.Native || existing.AccountBinding != nil || existing.Native) {
+			s.mu.Unlock()
+			return fmt.Errorf("account-bound keys %q and %q cannot share a key_hash", existingID, key.ID)
+		}
+	}
 	if old := s.keys[key.ID]; old != nil && !old.CreatedAt.IsZero() {
 		key.CreatedAt = old.CreatedAt
 	} else if key.CreatedAt.IsZero() {
@@ -1053,6 +1216,17 @@ func (s *Store) RotateKey(id string) (string, KeyConfig, error) {
 	if id == "" {
 		return "", KeyConfig{}, errors.New("id is required")
 	}
+	s.mu.RLock()
+	current := s.keys[id]
+	if current == nil {
+		s.mu.RUnlock()
+		return "", KeyConfig{}, ErrUnknownKey
+	}
+	if current.Native {
+		s.mu.RUnlock()
+		return "", KeyConfig{}, errors.New("native CPA keys must be rotated in the host and re-imported")
+	}
+	s.mu.RUnlock()
 	plain, err := GenerateKey()
 	if err != nil {
 		return "", KeyConfig{}, err
@@ -1070,8 +1244,7 @@ func (s *Store) RotateKey(id string) (string, KeyConfig, error) {
 	key.KeyHash = hash
 	key.KeyPreview = PreviewKey(plain)
 	key.UpdatedAt = time.Now().UTC()
-	copy := *key
-	copy.Models = append([]ModelRule(nil), key.Models...)
+	copy := cloneKeyConfig(key)
 	s.rebuildKeysByHashLocked()
 	s.clearPendingPicksForKeyLocked(id)
 	keys := s.keysSnapshotLocked()
@@ -1085,7 +1258,7 @@ func (s *Store) RotateKey(id string) (string, KeyConfig, error) {
 	if err := s.saveState(path, keys, usage, s.AliasesSnapshot(), s.ClassifyRulesSnapshot()); err != nil {
 		return "", KeyConfig{}, err
 	}
-	return plain, copy, nil
+	return plain, *copy, nil
 }
 
 func (s *Store) ResetRPM(id string) error {

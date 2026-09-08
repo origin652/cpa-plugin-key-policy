@@ -183,6 +183,75 @@ func TestAppManagementCreateAndRotate(t *testing.T) {
 	}
 }
 
+func TestManagementCreatesNativeBindingWithoutEchoingSecret(t *testing.T) {
+	app, _ := configureTestApp(t)
+	createBody := []byte(`{"id":"native-bound","native":true,"key":"native-secret","account_binding":{"allow":["native-a"],"strategy":"rr"}}`)
+	req, _ := json.Marshal(ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/plugins/cpa-key-policy/keys",
+		Body:   createBody,
+	})
+	raw, err := app.HandleMethod(MethodManagementHandle, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := managementResponseFromEnvelope(t, raw)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", resp.StatusCode, resp.Body)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["plain_key"]; exists {
+		t.Fatalf("native secret was echoed: %s", resp.Body)
+	}
+	key := payload["key"].(map[string]any)
+	if key["native"] != true {
+		t.Fatalf("native key response = %s", resp.Body)
+	}
+	binding := key["account_binding"].(map[string]any)
+	if binding["strategy"] != policy.BindingStrategyRoundRobin {
+		t.Fatalf("binding response = %+v", binding)
+	}
+
+	rotateReq, _ := json.Marshal(ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/plugins/cpa-key-policy/keys/rotate",
+		Body:   []byte(`{"id":"native-bound"}`),
+	})
+	raw, err = app.HandleMethod(MethodManagementHandle, rotateReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = managementResponseFromEnvelope(t, raw)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("native rotate status = %d body=%s", resp.StatusCode, resp.Body)
+	}
+}
+
+func TestManagementCanSetAndClearPluginKeyBinding(t *testing.T) {
+	app, _ := configureTestApp(t)
+	for _, body := range [][]byte{
+		[]byte(`{"id":"team-a","account_binding":{"allow":["team-*"]}}`),
+		[]byte(`{"id":"team-a","clear_account_binding":true}`),
+	} {
+		req, _ := json.Marshal(ManagementRequest{Method: http.MethodPatch, Path: "/v0/management/plugins/cpa-key-policy/keys", Body: body})
+		raw, err := app.HandleMethod(MethodManagementHandle, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := managementResponseFromEnvelope(t, raw)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("patch status = %d body=%s", resp.StatusCode, resp.Body)
+		}
+	}
+	key, ok := app.keyConfigByID("team-a")
+	if !ok || key.AccountBinding != nil {
+		t.Fatalf("binding was not cleared: %+v", key.AccountBinding)
+	}
+}
+
 func managementResponseFromEnvelope(t *testing.T, raw []byte) ManagementResponse {
 	t.Helper()
 	var env Envelope

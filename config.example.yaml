@@ -10,7 +10,8 @@ plugins:
       priority: 10
       # Runtime source of truth once created (keys, aliases, classify rules, usage).
       state_file: "cpa-key-policy-state.json"
-      # 开启后忽略别名目标的 group，使用 CPA 凭证权重进行全局加权轮询。
+      # Unbound plugin keys may ignore group in this compatibility mode.
+      # Explicit account_binding constraints always win over this setting.
       global_weighted_round_robin: false
 
       # Prefer creating keys/aliases/classify rules via Web UI or Management API.
@@ -22,6 +23,12 @@ plugins:
           key_hash: "sha256:replace-with-hash"
           key_preview: "cpa_abc...xyz"
           rpm: 60
+          # Optional fail-closed account isolation. Globs match the exact CPA
+          # auth candidate ID. A present empty allow list denies every account.
+          account_binding:
+            allow:
+              - "codex-team-*.json"
+            strategy: "weighted-round-robin" # weighted-round-robin | round-robin | fill-first
           # Either bind models directly…
           models:
             - alias: "fast"
