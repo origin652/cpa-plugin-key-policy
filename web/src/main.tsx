@@ -6,6 +6,10 @@ import "./styles.css";
 import { initThemeSync } from "./store/themeSync";
 import { initLangSync } from "./i18n/langSync";
 
+// Mark iframe embedding so CSS can reserve room for CPA's toolbar.
+// The detection ensures the shift is only applied when embedded in the CPA panel.
+document.documentElement.classList.toggle("embedded", window.self !== window.top);
+
 // Mirror the host CPA panel's theme (light/white/dark) onto this iframe's
 // <html> before React mounts, so the first paint already matches the panel and
 // there's no theme flash. No-op / light fallback when opened standalone.
