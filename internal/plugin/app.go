@@ -329,7 +329,7 @@ func schedulerCandidateUsable(status string) bool {
 	status = strings.ToLower(strings.TrimSpace(status))
 	status = strings.NewReplacer("-", "_", " ", "_").Replace(status)
 	switch status {
-	case "disabled", "error", "expired", "revoked", "invalid", "unavailable", "cooldown", "cooling_down", "quota_exhausted", "exhausted", "blocked":
+	case "disabled", "expired", "revoked", "invalid", "unavailable", "cooldown", "cooling_down", "quota_exhausted", "exhausted", "blocked":
 		return false
 	default:
 		return true
