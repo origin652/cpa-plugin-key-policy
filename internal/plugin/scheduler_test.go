@@ -9,6 +9,142 @@ import (
 	"testing"
 )
 
+func TestSchedulerCandidateUsable(t *testing.T) {
+	for _, test := range []struct {
+		status string
+		usable bool
+	}{
+		{"error", true},
+		{" ErRoR ", true},
+		{"active", true},
+		{"unknown", true},
+		{"", true},
+		{"disabled", false},
+		{"expired", false},
+		{"revoked", false},
+		{"invalid", false},
+		{"unavailable", false},
+		{"blocked", false},
+		{"cooldown", false},
+		{"cooling_down", false},
+		{"quota_exhausted", false},
+		{"exhausted", false},
+		{" CoOlInG-DoWn ", false},
+		{" QUOTA EXHAUSTED ", false},
+	} {
+		t.Run(fmt.Sprintf("%q", test.status), func(t *testing.T) {
+			if got := schedulerCandidateUsable(test.status); got != test.usable {
+				t.Fatalf("schedulerCandidateUsable(%q) = %t, want %t", test.status, got, test.usable)
+			}
+		})
+	}
+}
+
+func TestSchedulerPickHostOfferedRecovery(t *testing.T) {
+	app, plain := configureTestApp(t)
+	request := SchedulerPickRequest{
+		Provider: "openai-compatibility",
+		Model:    "test-model",
+		Options:  SchedulerPickOptions{Headers: map[string][]string{"Authorization": {"Bearer " + plain}}},
+	}
+	for _, step := range []struct {
+		name       string
+		candidates []SchedulerAuthCandidate
+		want       *SchedulerPickResponse
+	}{
+		{"empty host list", nil, &SchedulerPickResponse{}},
+		{"omitted during cooldown", []SchedulerAuthCandidate{{ID: "fallback", Status: "active"}}, &SchedulerPickResponse{Handled: true, AuthID: "fallback"}},
+		{"offered with historical error", []SchedulerAuthCandidate{{ID: "upstream", Status: "error"}}, &SchedulerPickResponse{Handled: true, AuthID: "upstream"}},
+		{"offered after host marks active", []SchedulerAuthCandidate{{ID: "upstream", Status: "active"}}, &SchedulerPickResponse{Handled: true, AuthID: "upstream"}},
+		{"only hard-failed candidates", []SchedulerAuthCandidate{
+			{ID: "disabled", Status: "disabled", Weight: 1},
+			{ID: "revoked", Status: "revoked", Weight: 1},
+			{ID: "expired", Status: "expired", Weight: 1},
+			{ID: "invalid", Status: "invalid", Weight: 1},
+			{ID: "cooling", Status: "cooldown", Weight: 1},
+		}, nil},
+		{"hard-failed and historical error", []SchedulerAuthCandidate{
+			{ID: "disabled", Status: "disabled", Priority: 10, Weight: 1},
+			{ID: "revoked", Status: "revoked", Priority: 10, Weight: 1},
+			{ID: "upstream", Status: "error", Priority: 1, Weight: 1},
+		}, &SchedulerPickResponse{Handled: true, AuthID: "upstream"}},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			request.Candidates = step.candidates
+			rawRequest, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := app.HandleMethod(MethodSchedulerPick, rawRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if step.want == nil {
+				const want = `{"ok":false,"error":{"code":"auth_not_found","message":"cpa-key-policy: 没有可用的凭证候选项","http_status":503}}`
+				if string(got) != want {
+					t.Fatalf("scheduler pick returned %s, want %s", got, want)
+				}
+				return
+			}
+			want, err := OKEnvelope(step.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(want) {
+				t.Fatalf("scheduler pick returned %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestSchedulerPickWeightsWithHistoricalError(t *testing.T) {
+	for _, mode := range []struct {
+		name      string
+		configure func(*testing.T) (*App, string)
+		group     string
+	}{
+		{"grouped", configureTestApp, "team"},
+		{"ungrouped", configureTestApp, ""},
+		{"global override", configureGlobalSchedulerApp, "plus"},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			app, plain := mode.configure(t)
+			team := map[string]string{"plan_type": "team"}
+			request := SchedulerPickRequest{
+				Provider: "codex",
+				Model:    "gpt-5-codex",
+				Options: SchedulerPickOptions{
+					Headers:  map[string][]string{"Authorization": {"Bearer " + plain}},
+					Metadata: map[string]any{"group": mode.group},
+				},
+				Candidates: []SchedulerAuthCandidate{
+					{ID: "recovered", Status: "error", Priority: 10, Weight: 2, Attributes: team},
+					{ID: "active", Status: "active", Priority: 10, Weight: 1, Attributes: team},
+					{ID: "fallback", Priority: 1, Weight: 100, Attributes: team},
+					{ID: "paused", Status: "error", Priority: 20, Weight: 0, Attributes: team},
+					{ID: "negative", Status: "error", Priority: 20, Weight: -1, Attributes: team},
+					{ID: "cooling", Status: "cooling-down", Priority: 20, Weight: 100, Attributes: team},
+				},
+			}
+			if mode.group == "team" {
+				request.Candidates = append(request.Candidates, SchedulerAuthCandidate{
+					ID: "other-group", Status: "error", Priority: 20, Weight: 100,
+					Attributes: map[string]string{"plan_type": "plus"},
+				})
+			}
+
+			counts := map[string]int{}
+			for range 6 {
+				response := schedulerPickForTest(t, app, request)
+				counts[response.AuthID]++
+			}
+			if len(counts) != 2 || counts["recovered"] != 4 || counts["active"] != 2 {
+				t.Fatalf("expected only the highest eligible priority at 2:1 weights, got %v", counts)
+			}
+		})
+	}
+}
+
 func TestSchedulerPickNoGroupUsesGlobalWeightedRoundRobin(t *testing.T) {
 	app, plain := configureTestApp(t)
 	request := SchedulerPickRequest{
@@ -45,6 +181,7 @@ func TestSchedulerPickNoGroupDefersNativeKey(t *testing.T) {
 		Candidates: []SchedulerAuthCandidate{
 			{ID: "codex-a", Provider: "codex", Weight: 4},
 			{ID: "codex-b", Provider: "codex", Weight: 1},
+			{ID: "recovered", Provider: "codex", Status: "error"},
 		},
 	}
 
@@ -102,6 +239,7 @@ func TestSchedulerPickGlobalModeDefersNativeKey(t *testing.T) {
 		Candidates: []SchedulerAuthCandidate{
 			{ID: "codex-plus", Provider: "codex", Weight: 4, Attributes: map[string]string{"plan_type": "plus"}},
 			{ID: "codex-prolite", Provider: "codex", Weight: 1, Attributes: map[string]string{"plan_type": "prolite"}},
+			{ID: "recovered", Provider: "codex", Status: "error"},
 		},
 	}
 

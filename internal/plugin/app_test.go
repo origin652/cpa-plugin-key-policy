@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"cpa-key-policy/internal/policy"
 )
@@ -121,6 +122,86 @@ func TestAppModelsEndpointDenied(t *testing.T) {
 	}
 	if authResp.Authenticated {
 		t.Fatalf("auth response = %+v, want denied", authResp)
+	}
+}
+
+func TestAppBudgetGateWithHistoricalSchedulerError(t *testing.T) {
+	for _, test := range []struct {
+		reason string
+		daily  float64
+		weekly float64
+	}{
+		{"daily_exceeded", 1, 0},
+		{"weekly_exceeded", 0, 1},
+	} {
+		t.Run(test.reason, func(t *testing.T) {
+			app := NewApp()
+			plain := "cpa_scheduler_budget_test"
+			store := app.Store()
+			if err := store.Configure(policy.Config{
+				Enabled:   true,
+				StateFile: filepath.Join(t.TempDir(), "state.json"),
+				Keys: []policy.KeyConfig{{
+					ID: "metered", Enabled: true, KeyHash: hashForTest(t, plain),
+					DailyLimitUSD: test.daily, WeeklyLimitUSD: test.weekly,
+					Models: []policy.ModelRule{{
+						Alias: "fast", Provider: "codex", TargetModel: "gpt-5-codex", Group: "team",
+						BillingMode: "per_call", PerCallUSD: 1,
+					}},
+				}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(store.StopUsageFlusher)
+			store.SetClock(func() time.Time { return time.Unix(1_700_000_000, 0) })
+			authRequest := FrontendAuthRequest{
+				Method: "POST", Path: "/v1/chat/completions",
+				Headers: http.Header{"Authorization": {"Bearer " + plain}},
+				Body:    []byte(`{"model":"fast"}`),
+			}
+			rawRequest, err := json.Marshal(authRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authenticate := func() FrontendAuthResponse {
+				t.Helper()
+				raw, err := app.HandleMethod(MethodFrontendAuthAuthenticate, rawRequest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var response FrontendAuthResponse
+				if err := unmarshalOK(raw, &response); err != nil {
+					t.Fatal(err)
+				}
+				return response
+			}
+			allowed := authenticate()
+			if !allowed.Authenticated || allowed.Principal != "metered" || allowed.Metadata["group"] != "team" {
+				t.Fatalf("expected plugin auth and group before charge, got %+v", allowed)
+			}
+			t.Run("admitted request can pick", func(t *testing.T) {
+				response := schedulerPickForTest(t, app, SchedulerPickRequest{
+					Provider: "codex", Model: "gpt-5-codex",
+					Options: SchedulerPickOptions{
+						Headers: authRequest.Headers, Metadata: map[string]any{"group": allowed.Metadata["group"]},
+					},
+					Candidates: []SchedulerAuthCandidate{{
+						ID: "recovered", Provider: "codex", Status: "error", Attributes: map[string]string{"plan_type": "team"},
+					}},
+				})
+				if response.AuthID != "recovered" {
+					t.Fatalf("picked %q, want recovered", response.AuthID)
+				}
+			})
+			if cost := store.RecordUsage("metered", "fast", "gpt-5-codex", false, policy.UsageDetail{}); cost != 1 {
+				t.Fatalf("charged %v, want 1", cost)
+			}
+			denied := authenticate()
+			decision := store.Authenticate(authRequest.Method, authRequest.Path, authRequest.Headers, nil, authRequest.Body)
+			if denied.Authenticated || len(denied.Metadata) != 0 || !decision.CostLimited || decision.Reason != test.reason {
+				t.Fatalf("expected %s denial before scheduling, got %+v / %+v", test.reason, denied, decision)
+			}
+		})
 	}
 }
 
