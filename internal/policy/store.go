@@ -311,9 +311,9 @@ func (s *Store) Authenticate(method, path string, headers http.Header, query map
 		return decision
 	}
 	if decision.ModelList {
-		// Per-key override: a key with AllowModelsEndpoint=true may reach the
-		// global /v1/models list; otherwise it's 401. We still cannot filter the
-		// list contents per key (CPA limitation above), only hide/show it.
+		// Per-key override: a key with AllowModelsEndpoint=true may reach
+		// /v1/models; otherwise it's 401. On CPA v8.0.78+ the list itself is
+		// narrowed to the key's models by the model_list response interceptor.
 		if key.AllowModelsEndpoint {
 			decision.Allowed = true
 			decision.Reason = "models_endpoint_allowed"
