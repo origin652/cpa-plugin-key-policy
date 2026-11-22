@@ -171,7 +171,7 @@ type SchedulerPickResponse struct {
 type ResponseInterceptRequest struct {
 	// Kind is set by CPA v8.0.78+ ("model_list", "execution", "count_tokens").
 	// Empty on older hosts.
-	Kind            string         `json:\"Kind\"`
+	Kind            string         `json:"Kind"`
 	SourceFormat    string         `json:"SourceFormat"`
 	Model           string         `json:"Model"`
 	RequestedModel  string         `json:"RequestedModel"`
