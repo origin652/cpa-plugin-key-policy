@@ -154,28 +154,12 @@ func TestFilterModelListSkipsCodexAliasWithoutTarget(t *testing.T) {
 	policy := testPolicy(ModelRule{Alias: "my-model"})
 	body := []byte(`{"models":[{"slug":"gpt-5.5","display_name":"GPT 5.5","supported_reasoning_levels":[]}]}`)
 	out, changed := FilterModelListBody(body, policy)
-	if !changed || out != nil {
-		t.Fatalf("expected no change for an alias without catalog metadata, got %s", out)
+	if !changed {
+		t.Fatal("the disallowed model must be removed")
 	}
-	if FilterModelListBodyMustKeep(t, body, policy, "gpt-5.5") {
-		t.Fatal("allowed model must stay")
+	if got := listIDs(t, out, "models"); len(got) != 0 {
+		t.Fatalf("models = %v, want empty: an alias without catalog metadata cannot be shown to Codex", got)
 	}
-}
-
-// FilterModelListBodyMustKeep asserts the body still parses and lists the id.
-func FilterModelListBodyMustKeep(t *testing.T, body []byte, policy *ModelListPolicy, id string) bool {
-	t.Helper()
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(body, &top); err != nil {
-		t.Fatal(err)
-	}
-	entries := listIDs(t, body, "models")
-	for _, entry := range entries {
-		if entry == id {
-			return true
-		}
-	}
-	return false
 }
 
 func TestFilterModelListSynthesizesCloakedAnthropicAlias(t *testing.T) {
