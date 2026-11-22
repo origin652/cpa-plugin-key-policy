@@ -245,7 +245,15 @@ curl -X POST "$CPA/v0/management/plugins/cpa-key-policy/aliases" \
 
 ### `/v1/models` on CPA main port
 
-Per-key `allow_models_endpoint`: **binary** — deny (401) or full global list. CPA cannot filter that list per plugin key on the main port.
+Per-key `allow_models_endpoint`: **binary** — deny (401) or allow the list.
+On CPA v8.0.78+ the allowed list itself is narrowed to the key's models: the plugin
+implements the host's `model_list` response interceptor and keeps only the key's
+aliases in every list format — OpenAI `/v1/models`, the Codex client catalog
+(`/v1/models?client_version=`), the Anthropic model list (cloaked
+`claude-fable-5-dd-…` ids are decoded before matching) and Gemini `/v1beta/models`.
+Tool metadata in the Codex catalog (reasoning levels, context window) is preserved.
+Keys that are not plugin keys (CPA `access.api-keys`) keep the global list.
+On older hosts the list stays global; model permissions on inference are unchanged.
 
 
 ---

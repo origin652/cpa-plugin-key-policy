@@ -218,6 +218,8 @@ func resolveProviderKey(provider string, availableProviders []string) string {
 	return p
 }
 
+const responseKindModelList = "model_list"
+
 func (a *App) interceptResponse(raw []byte) ([]byte, error) {
 	var req ResponseInterceptRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -229,6 +231,20 @@ func (a *App) interceptResponse(raw []byte) ([]byte, error) {
 	// Billing for both paths is centralized in usage.handle (handleUsage),
 	// which the host fires after every request completes with already-parsed
 	// token counts. Doing it here too would double-bill non-streaming requests.
+	if req.Kind == responseKindModelList {
+		// Narrow the model list to this plugin key's models. CPA routes every
+		// model list (OpenAI, Codex client catalog, Anthropic, Gemini) through
+		// this hook; keys that are not plugin keys keep the global list.
+		allowed, ok := a.store.ModelListAllowed(req.RequestHeaders)
+		if !ok {
+			return OKEnvelope(ResponseInterceptResponse{})
+		}
+		body, changed := policy.FilterModelListBody(req.Body, allowed)
+		if !changed {
+			return OKEnvelope(ResponseInterceptResponse{})
+		}
+		return OKEnvelope(ResponseInterceptResponse{Body: body})
+	}
 	if req.Stream {
 		// Streaming responses are not safe to rewrite (SSE framing) — return as-is.
 		return OKEnvelope(ResponseInterceptResponse{})
