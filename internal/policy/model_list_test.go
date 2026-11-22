@@ -7,12 +7,20 @@ import (
 	"testing"
 )
 
-func allowOnly(ids ...string) func(string) bool {
-	set := map[string]bool{}
-	for _, id := range ids {
-		set[normalizeModelListID(id)] = true
+func testPolicy(rules ...ModelRule) *ModelListPolicy {
+	policy := &ModelListPolicy{rules: map[string]ModelRule{}}
+	for _, rule := range rules {
+		policy.rules[normalizeModelListID(rule.Alias)] = rule
 	}
-	return func(id string) bool { return set[normalizeModelListID(id)] }
+	return policy
+}
+
+func allowOnly(ids ...string) *ModelListPolicy {
+	rules := make([]ModelRule, 0, len(ids))
+	for _, id := range ids {
+		rules = append(rules, ModelRule{Alias: id})
+	}
+	return testPolicy(rules...)
 }
 
 func listIDs(t *testing.T, body []byte, field string) []string {
@@ -98,6 +106,62 @@ func TestFilterModelListGemini(t *testing.T) {
 	}
 }
 
+func TestFilterModelListSynthesizesCustomAliasFromTarget(t *testing.T) {
+	policy := testPolicy(ModelRule{Alias: "codex-latest", TargetModel: "gpt-5-codex"}, ModelRule{Alias: "gpt-5.5"})
+	body := []byte(`{"models":[{"slug":"gpt-5-codex","display_name":"GPT 5 Codex","default_reasoning_level":"high"},{"slug":"gpt-5.5","display_name":"GPT 5.5"},{"slug":"gpt-4.1","display_name":"GPT 4.1"}]}`)
+	out, changed := FilterModelListBody(body, policy)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	var parsed struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Models) != 2 {
+		t.Fatalf("models = %+v", parsed.Models)
+	}
+	bySlug := map[string]map[string]any{}
+	for _, model := range parsed.Models {
+		bySlug[model["slug"].(string)] = model
+	}
+	alias, ok := bySlug["codex-latest"]
+	if !ok {
+		t.Fatalf("custom alias was not synthesized: %+v", parsed.Models)
+	}
+	if alias["default_reasoning_level"] != "high" {
+		t.Fatalf("target metadata lost: %+v", alias)
+	}
+	if _, leaked := bySlug["gpt-5-codex"]; leaked {
+		t.Fatalf("target model must not stay under its own id: %+v", parsed.Models)
+	}
+}
+
+func TestFilterModelListSynthesizesCustomAliasWithoutTarget(t *testing.T) {
+	policy := testPolicy(ModelRule{Alias: "my-model"})
+	body := []byte(`{"object":"list","data":[{"id":"other","object":"model"}]}`)
+	out, changed := FilterModelListBody(body, policy)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if got, want := listIDs(t, out, "data"), []string{"my-model"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
+func TestFilterModelListSynthesizesCloakedAnthropicAlias(t *testing.T) {
+	policy := testPolicy(ModelRule{Alias: "gpt-6.1-sol"})
+	body := []byte(`{"data":[{"id":"claude-haiku-5-5","type":"model"}],"has_more":false,"first_id":"claude-haiku-5-5","last_id":"claude-haiku-5-5"}`)
+	out, changed := FilterModelListBody(body, policy)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if got, want := listIDs(t, out, "data"), []string{claudeCloakedModelPrefix + reverseString("gpt-6.1-sol")}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
 func TestFilterModelListNoChangeCases(t *testing.T) {
 	cases := map[string][]byte{
 		"all allowed":    []byte(`{"data":[{"id":"fast"}]}`),
@@ -112,7 +176,7 @@ func TestFilterModelListNoChangeCases(t *testing.T) {
 		}
 	}
 	if _, changed := FilterModelListBody([]byte(`{"data":[{"id":"x"}]}`), nil); changed {
-		t.Fatal("nil predicate must not change the body")
+		t.Fatal("nil policy must not change the body")
 	}
 }
 
@@ -126,22 +190,22 @@ func TestFilterModelListEmptyAllowlistReturnsEmptyList(t *testing.T) {
 	}
 }
 
-func TestStoreModelListAllowed(t *testing.T) {
+func TestStoreModelListPolicy(t *testing.T) {
 	store, plain := newTestStore(t)
-	allowed, ok := store.ModelListAllowed(http.Header{"Authorization": {"Bearer " + plain}})
+	policy, ok := store.ModelListPolicy(http.Header{"Authorization": {"Bearer " + plain}})
 	if !ok {
 		t.Fatal("plugin key must be recognized")
 	}
-	if !allowed("fast") || !allowed("FAST") || allowed("gpt-5-codex") || allowed("other") {
+	if !policy.Allowed("fast") || !policy.Allowed("FAST") || policy.Allowed("gpt-5-codex") || policy.Allowed("other") {
 		t.Fatal("allowlist must match aliases only, case-insensitively")
 	}
-	if _, ok := store.ModelListAllowed(http.Header{"Authorization": {"Bearer not-a-plugin-key"}}); ok {
+	if _, ok := store.ModelListPolicy(http.Header{"Authorization": {"Bearer not-a-plugin-key"}}); ok {
 		t.Fatal("unknown keys must keep the global list")
 	}
-	if _, ok := store.ModelListAllowed(http.Header{}); ok {
+	if _, ok := store.ModelListPolicy(http.Header{}); ok {
 		t.Fatal("requests without a key must keep the global list")
 	}
-	if _, ok := store.ModelListAllowed(http.Header{"X-Api-Key": {plain}}); !ok {
+	if _, ok := store.ModelListPolicy(http.Header{"X-Api-Key": {plain}}); !ok {
 		t.Fatal("X-Api-Key header must be recognized like at authentication")
 	}
 }

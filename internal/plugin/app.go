@@ -235,11 +235,11 @@ func (a *App) interceptResponse(raw []byte) ([]byte, error) {
 		// Narrow the model list to this plugin key's models. CPA routes every
 		// model list (OpenAI, Codex client catalog, Anthropic, Gemini) through
 		// this hook; keys that are not plugin keys keep the global list.
-		allowed, ok := a.store.ModelListAllowed(req.RequestHeaders)
+		modelPolicy, ok := a.store.ModelListPolicy(req.RequestHeaders)
 		if !ok {
 			return OKEnvelope(ResponseInterceptResponse{})
 		}
-		body, changed := policy.FilterModelListBody(req.Body, allowed)
+		body, changed := policy.FilterModelListBody(req.Body, modelPolicy)
 		if !changed {
 			return OKEnvelope(ResponseInterceptResponse{})
 		}
