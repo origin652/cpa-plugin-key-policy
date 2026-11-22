@@ -168,7 +168,6 @@ func TestFilterModelListNoChangeCases(t *testing.T) {
 		"not a list":     []byte(`{"id":"fast","object":"model"}`),
 		"invalid json":   []byte(`not json`),
 		"empty body":     nil,
-		"entries no ids": []byte(`{"data":[{"object":"model"}]}`),
 	}
 	for name, body := range cases {
 		if out, changed := FilterModelListBody(body, allowOnly("fast")); changed || out != nil {

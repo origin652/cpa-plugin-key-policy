@@ -137,6 +137,7 @@ func FilterModelListBody(body []byte, policy *ModelListPolicy) ([]byte, bool) {
 		byID := make(map[string]json.RawMessage, len(entries))
 		kept := make([]json.RawMessage, 0, len(entries))
 		present := make(map[string]bool, len(entries))
+		fieldChanged := false
 		for _, entry := range entries {
 			id, hasID := modelListEntryID(entry)
 			normalized := ""
@@ -147,7 +148,7 @@ func FilterModelListBody(body []byte, policy *ModelListPolicy) ([]byte, bool) {
 				}
 			}
 			if hasID && !policy.Allowed(id) {
-				changed = true
+				fieldChanged = true
 				continue
 			}
 			if normalized != "" {
@@ -157,11 +158,12 @@ func FilterModelListBody(body []byte, policy *ModelListPolicy) ([]byte, bool) {
 		}
 		if added, ok := policy.synthesize(format, present, byID); ok {
 			kept = append(kept, added...)
-			changed = true
+			fieldChanged = true
 		}
-		if len(kept) == len(entries) {
+		if !fieldChanged {
 			continue
 		}
+		changed = true
 		encoded, err := json.Marshal(kept)
 		if err != nil {
 			return nil, false
