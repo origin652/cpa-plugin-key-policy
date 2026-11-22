@@ -224,6 +224,12 @@ func rewriteModelListEntry(base json.RawMessage, format modelListFormat, alias s
 	if alias == "" {
 		return nil, false
 	}
+	if len(base) == 0 && format == formatCodex {
+		// The Codex catalog has required metadata fields; a hand-built entry
+		// makes Codex reject the whole catalog. Only aliases whose target the
+		// catalog describes can be shown there.
+		return nil, false
+	}
 	entry := map[string]json.RawMessage{}
 	if len(base) > 0 {
 		if err := json.Unmarshal(base, &entry); err != nil {
@@ -239,9 +245,6 @@ func rewriteModelListEntry(base json.RawMessage, format modelListFormat, alias s
 	switch format {
 	case formatCodex:
 		set("slug", alias)
-		if len(base) == 0 {
-			set("display_name", alias)
-		}
 	case formatAnthropic:
 		set("id", cloakModelListID(alias))
 		if _, exists := entry["type"]; !exists {
