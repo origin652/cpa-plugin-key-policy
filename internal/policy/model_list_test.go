@@ -164,10 +164,10 @@ func TestFilterModelListSynthesizesCloakedAnthropicAlias(t *testing.T) {
 
 func TestFilterModelListNoChangeCases(t *testing.T) {
 	cases := map[string][]byte{
-		"all allowed":    []byte(`{"data":[{"id":"fast"}]}`),
-		"not a list":     []byte(`{"id":"fast","object":"model"}`),
-		"invalid json":   []byte(`not json`),
-		"empty body":     nil,
+		"all allowed":  []byte(`{"data":[{"id":"fast"}]}`),
+		"not a list":   []byte(`{"id":"fast","object":"model"}`),
+		"invalid json": []byte(`not json`),
+		"empty body":   nil,
 	}
 	for name, body := range cases {
 		if out, changed := FilterModelListBody(body, allowOnly("fast")); changed || out != nil {
