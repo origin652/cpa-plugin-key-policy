@@ -221,7 +221,7 @@
     "alias": {
       "name": "Имя псевдонима",
       "dispatch": "Режим",
-      "roundRobin": "Round-robin",
+      "roundRobin": "По очереди",
       "priority": "Приоритет",
       "roundRobinDesc": "Циклическое распределение запросов между целями",
       "priorityDesc": "Использовать цели по порядку, первая доступная",
